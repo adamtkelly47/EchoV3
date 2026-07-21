@@ -15,7 +15,7 @@ A generic chatbot wrapper, a collection of disconnected agents, a system where a
 
 ## Current Phase
 
-**Phase 4 — Database and repository foundation.** Phases 0-3 (governing documents, Docker foundation, quality/CI, core runtime contracts) are complete. Phase 4 establishes Neon Postgres as the durable system of record for real: Alembic migrations (`echo/migrations/`), session management and transaction boundaries (`infrastructure/database/engine.py`), and repositories for the cross-cutting platform tables — audit events, jobs, source/computed-value provenance records, model calls, tool calls. Verified against the real Neon dev branch, not a mock. No domain/business logic exists yet — domains begin Phase 5+. Do not begin Phase 5 without explicit instruction.
+**Phase 5 — Capability registry and tool execution.** Phases 0-4 (governing documents, Docker foundation, quality/CI, core runtime contracts, database foundation) are complete. Phase 5 adds the first real domain, `domains/capabilities/`: a registry (discovery through registration, never keyword lists) and an executor implementing the Constitution's Capability Execution pipeline (lookup → input validation → permission check → execution → output validation → audit, every attempt audited even on failure). Only read capabilities execute — write capabilities are registrable but blocked until the Approval Engine exists (Phase 6). Do not begin Phase 6 without explicit instruction.
 
 ## How to Read These Docs
 

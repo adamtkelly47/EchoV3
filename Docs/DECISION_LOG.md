@@ -121,3 +121,21 @@ Verified against the real Neon dev branch end to end, not assumed correct from t
 - Rebuilt the live Docker stack (Dockerfile now copies `infrastructure/`, `migrations/`, and `alembic.ini`) and ran `alembic current` inside the *deployed* `backend` container (not the bind-mounted dev container) to confirm the image itself is self-sufficient for running migrations in a real deployment, not just in the verification setup.
 
 `tests/integration/` skips gracefully (not a failure) when `DATABASE_URL` isn't set, since no database secret is configured in GitHub Actions yet — CI runs everything else; integration tests are verified locally against the real Neon branch, per `TESTING.md`'s updated "Running Checks Locally" section.
+
+## 2026-07-21 — Continuing autonomously through phases per explicit user instruction
+
+User asked to keep working through phases until usage hits 85%, committing after each phase but not pushing, with all other rules/Constitution still applying. This supersedes the default "stop and wait for explicit instruction between phases" behavior for the phases covered by this instruction — each phase below still gets its own restated objective, verification, and completion report; only the "wait for a new go-ahead message" step is what's being skipped, at the user's explicit request.
+
+## 2026-07-21 — Phase 5 (capability registry and tool execution) completed
+
+First real domain: `domains/capabilities/` (models, errors, policies, service — no `repository.py` yet, since the registry is in-process/code-populated for Phase 5, not dynamically edited at runtime; only tool-call *execution audit* is persisted, via the `ToolCallRepository` already built in Phase 4). `CapabilityRegistry` is registration-only discovery (no keyword lists); `CapabilityExecutor` runs the full pipeline from `CAPABILITY_REGISTRY.md` — lookup, permission check, input validation, execution (with timeout), output validation — with every attempt audited exactly once in a `finally` block, so a failure at any stage still produces a tool-call record.
+
+Write capabilities are registrable (their `CapabilityContract` can declare `read_write_classification=WRITE`) but the executor refuses to run them (`WriteCapabilityNotExecutableError`) until the Approval Engine exists — this is Phase 6's explicit prerequisite relationship from PROMPT.md, enforced in code now rather than left as a documentation-only promise.
+
+Built five fake test capabilities (echo, permission-gated echo, write, slow/timeout, always-failing) per the Phase 5 deliverable list's explicit call for "fake test capabilities," plus a `FakeToolCallRepository` for fast unit tests. One integration test wires the executor to the *real* Postgres-backed `ToolCallRepository` to prove the Protocol contract holds against the real implementation, not just the fake.
+
+All five of Phase 5's verification criteria were written as tests, not just claimed: invalid input never reaches the handler (proven with a spy handler that asserts it was never called), a capability cannot run without its required permission, every execution attempt is audited including failures, discovery requires no keyword list, and (via the architecture checker plus the fact that the executor only ever touches typed Pydantic models) no provider-specific data crosses a domain boundary — there are no real providers yet, so this is necessarily a structural argument rather than an empirical one, which is the honest state of things at this phase.
+
+One real gap found during verification, not a code bug but a coverage-tooling gap: `domains/` had been created but never added to `pyproject.toml`'s coverage/vulture/bandit path lists or the CI workflow/`TESTING.md` runbook, so the new domain code was silently invisible to every quality gate. Fixed by adding it everywhere the other three packages (`apps`, `core`, `infrastructure`) already appeared — a good reminder to update these lists as a checklist item whenever a new top-level package is introduced, not just when writing the code itself.
+
+Final state: `ruff`, `mypy --strict` (`apps`+`scripts`+`core`+`infrastructure`+`migrations`+`domains`), both custom checkers, `vulture`, `bandit`, `pip-audit` all clean; 83/83 tests passing (63 carried over + 20 new), 89% overall coverage, `domains/capabilities` at 99-100%.
