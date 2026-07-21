@@ -13,12 +13,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from application.capabilities.current_time import build_current_time_capability
 from application.model_gateway_factory import ModelGatewayPort, build_model_gateway
 from application.orchestrators.conversation import ConversationOrchestrator
+from application.orchestrators.memory_extraction import MemoryExtractionOrchestrator
 from core.config import get_settings
 from core.time import SystemClock
 from domains.capabilities.service import CapabilityExecutor, CapabilityRegistry
 from domains.conversation.repository import PostgresConversationRepository
 from domains.conversation.service import ConversationService
+from domains.memory.repository import PostgresMemoryRepository
+from domains.memory.service import MemoryService
 from infrastructure.database.engine import session_scope
+from infrastructure.database.repositories.audit import PostgresAuditRepository
 from infrastructure.database.repositories.observability import PostgresToolCallRepository
 
 
@@ -62,3 +66,18 @@ def get_conversation_orchestrator(
     gateway: ModelGatewayPort = Depends(get_model_gateway),
 ) -> ConversationOrchestrator:
     return ConversationOrchestrator(conversations, executor, gateway)
+
+
+def get_memory_service(
+    session: AsyncSession = Depends(get_db_session),
+) -> MemoryService:
+    return MemoryService(
+        PostgresMemoryRepository(session), PostgresAuditRepository(session), SystemClock()
+    )
+
+
+def get_memory_extraction_orchestrator(
+    memory: MemoryService = Depends(get_memory_service),
+    gateway: ModelGatewayPort = Depends(get_model_gateway),
+) -> MemoryExtractionOrchestrator:
+    return MemoryExtractionOrchestrator(memory, gateway)

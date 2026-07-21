@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from redis.asyncio import Redis
 
 from apps.api.routes.conversations import router as conversations_router
+from apps.api.routes.memory import router as memory_router
 from core.config import get_settings
 from core.logging import configure_logging, get_logger
 from core.observability import correlation_scope
@@ -22,6 +23,7 @@ logger = get_logger("echo.api")
 
 app = FastAPI(title="Echo API", version="0.1.0")
 app.include_router(conversations_router)
+app.include_router(memory_router)
 
 # Frontend runs on a different origin (localhost:3000 vs. this API's
 # localhost:8000) — the browser needs explicit CORS permission. Origin is

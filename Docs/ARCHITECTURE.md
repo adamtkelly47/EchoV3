@@ -72,7 +72,7 @@ echo/
         capabilities/   # the generic capability *contract* shape (Phase 3) — not the registry,
                         # which the Capabilities domain owns starting Phase 5
     domains/
-        conversation/
+        conversation/   # populated Phase 8: schemas, repository, service, errors
         approvals/      # populated Phase 6: models, schemas, errors, policies, service, repository
         capabilities/   # populated Phase 5: models, errors, policies, service (no repository.py —
                          # the registry is in-process/code-populated; only execution audit persists,
@@ -81,7 +81,7 @@ echo/
         research/
         calendar/
         email/
-        memory/
+        memory/         # populated Phase 9: models, schemas, errors, policies, service, repository
         knowledge/
         notifications/
         projects/
@@ -159,7 +159,7 @@ Cross-domain collaboration occurs only through the Application layer (`applicati
 
 ## Application Layer
 
-Per CONSTITUTION.md, `application/` contains `capabilities/`, `orchestrators/`, `workflows/`, `commands/`, `queries/` — populated one subdirectory at a time, only when something actually needs it (No Future Scaffolding). Phase 8 populated `capabilities/` (platform capabilities not owned by any single domain, e.g. `current_time`) and `orchestrators/` (`ConversationOrchestrator`, coordinating Conversation + Capabilities + the Model Gateway for one request). `workflows/`, `commands/`, `queries/` remain unpopulated until a phase needs them.
+Per CONSTITUTION.md, `application/` contains `capabilities/`, `orchestrators/`, `workflows/`, `commands/`, `queries/` — populated one subdirectory at a time, only when something actually needs it (No Future Scaffolding). Phase 8 populated `capabilities/` (platform capabilities not owned by any single domain, e.g. `current_time`) and `orchestrators/` (`ConversationOrchestrator`, coordinating Conversation + Capabilities + the Model Gateway for one request). Phase 9 added a second orchestrator, `MemoryExtractionOrchestrator` (coordinating Memory + the Model Gateway to turn free text into candidate facts). `workflows/`, `commands/`, `queries/` remain unpopulated until a phase needs them.
 
 ## File and Function Discipline
 
