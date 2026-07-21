@@ -18,6 +18,13 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0,<2.1",
     "alembic>=1.13,<1.14",
     "anthropic>=0.40,<1.0",
+    # Symmetric encryption for OAuth tokens at rest (Docs/SECURITY.md:
+    # "Secrets ... are stored in secure secret management ... and encrypted
+    # at rest") — Fernet (AES-128-CBC + HMAC), not hand-rolled crypto.
+    # >=48.0.1 specifically: pip-audit flagged 43.0.3 for GHSA-537c-gmf6-5ccf
+    # (a vulnerable statically-linked OpenSSL bundled in the wheel, fixed in
+    # 48.0.1) plus three related PYSEC advisories on the same range.
+    "cryptography>=48.0.1,<49",
 ]
 
 [project.optional-dependencies]

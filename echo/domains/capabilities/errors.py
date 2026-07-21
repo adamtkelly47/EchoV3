@@ -11,12 +11,14 @@ class CapabilityNotFoundError(EchoError):
     code = "capability_not_found"
     retryable = False
     severity = Severity.LOW
+    http_status = 404
 
 
 class CapabilityAlreadyRegisteredError(EchoError):
     code = "capability_already_registered"
     retryable = False
     severity = Severity.HIGH
+    http_status = 409
 
 
 class WriteCapabilityNotExecutableError(EchoError):
@@ -28,3 +30,4 @@ class WriteCapabilityNotExecutableError(EchoError):
     code = "write_capability_requires_approval_engine"
     retryable = False
     severity = Severity.HIGH
+    http_status = 403

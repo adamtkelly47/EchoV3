@@ -5,12 +5,14 @@ class ProposalNotFoundError(EchoError):
     code = "proposal_not_found"
     retryable = False
     severity = Severity.LOW
+    http_status = 404
 
 
 class InvalidStateTransitionError(EchoError):
     code = "invalid_state_transition"
     retryable = False
     severity = Severity.HIGH
+    http_status = 409
 
 
 class PayloadMismatchError(EchoError):
@@ -21,6 +23,7 @@ class PayloadMismatchError(EchoError):
     code = "payload_mismatch"
     retryable = False
     severity = Severity.HIGH
+    http_status = 409
 
 
 class SelfApprovalNotAllowedError(EchoError):
@@ -29,9 +32,11 @@ class SelfApprovalNotAllowedError(EchoError):
     code = "self_approval_not_allowed"
     retryable = False
     severity = Severity.CRITICAL
+    http_status = 403
 
 
 class NoApprovalOnRecordError(EchoError):
     code = "no_approval_on_record"
     retryable = False
     severity = Severity.HIGH
+    http_status = 404

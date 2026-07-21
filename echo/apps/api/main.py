@@ -9,13 +9,16 @@ import asyncpg
 import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
 
+from apps.api.routes.calendar import router as calendar_router
 from apps.api.routes.conversations import router as conversations_router
 from apps.api.routes.memory import router as memory_router
 from core.config import get_settings
+from core.errors import EchoError
 from core.logging import configure_logging, get_logger
-from core.observability import correlation_scope
+from core.observability import correlation_scope, get_correlation_id
 
 settings = get_settings()
 configure_logging(settings.log_level)
@@ -24,6 +27,7 @@ logger = get_logger("echo.api")
 app = FastAPI(title="Echo API", version="0.1.0")
 app.include_router(conversations_router)
 app.include_router(memory_router)
+app.include_router(calendar_router)
 
 # Frontend runs on a different origin (localhost:3000 vs. this API's
 # localhost:8000) — the browser needs explicit CORS permission. Origin is
@@ -35,6 +39,25 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(EchoError)
+async def handle_echo_error(request: Request, exc: EchoError) -> JSONResponse:
+    """Every EchoError subclass declares its own `http_status`/`code`
+    (core/errors/base.py) — this is the one place that gets translated into
+    a wire response, so no route handler needs its own try/except
+    (PROMPT.md Phase 10 verification: "read failures are surfaced
+    honestly" — surfaced live testing found every route up to this point
+    returning a bare, bodyless 500 for a domain error; this closes that gap
+    for every route, not just Calendar's)."""
+    return JSONResponse(
+        status_code=exc.http_status,
+        content={
+            "error_code": exc.code,
+            "message": exc.message,
+            "correlation_id": exc.correlation_id or get_correlation_id(),
+        },
+    )
 
 
 @app.middleware("http")

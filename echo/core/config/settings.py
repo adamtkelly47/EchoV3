@@ -29,6 +29,18 @@ class Settings(BaseSettings):
     ollama_model_name: str = "llama3.2:1b"
     default_model_provider: str = "ollama"
 
+    # Google Calendar OAuth (Phase 10). Read-only scope only (Docs/SECURITY.md:
+    # "Read integrations ... request read-only scopes; write scopes are never
+    # requested until the corresponding write phase ... is reached").
+    google_oauth_client_id: str | None = None
+    google_oauth_client_secret: str | None = None
+    google_oauth_redirect_uri: str = "http://localhost:8000/calendar/oauth/callback"
+
+    # Symmetric key for encrypting secrets at rest (Docs/SECURITY.md) — a
+    # Fernet key, not domain-specific, so it lives at the top level rather
+    # than under a per-domain settings block.
+    secret_encryption_key: str | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:

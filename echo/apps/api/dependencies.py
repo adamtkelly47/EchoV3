@@ -10,12 +10,22 @@ from functools import lru_cache
 from fastapi import Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from application.calendar_provider_factory import build_google_calendar_provider
+from application.capabilities.calendar_read import (
+    build_calendar_free_busy_capability,
+    build_calendar_list_events_capability,
+)
 from application.capabilities.current_time import build_current_time_capability
 from application.model_gateway_factory import ModelGatewayPort, build_model_gateway
 from application.orchestrators.conversation import ConversationOrchestrator
 from application.orchestrators.memory_extraction import MemoryExtractionOrchestrator
 from core.config import get_settings
 from core.time import SystemClock
+from domains.calendar.repository import (
+    PostgresCalendarCredentialRepository,
+    PostgresCalendarEventRepository,
+)
+from domains.calendar.service import CalendarProviderPort, CalendarService
 from domains.capabilities.service import CapabilityExecutor, CapabilityRegistry
 from domains.conversation.repository import PostgresConversationRepository
 from domains.conversation.service import ConversationService
@@ -24,6 +34,21 @@ from domains.memory.service import MemoryService
 from infrastructure.database.engine import session_scope
 from infrastructure.database.repositories.audit import PostgresAuditRepository
 from infrastructure.database.repositories.observability import PostgresToolCallRepository
+from infrastructure.secrets.encryption import SecretCipher
+
+
+@lru_cache
+def get_google_calendar_provider() -> CalendarProviderPort:
+    return build_google_calendar_provider(get_settings())
+
+
+@lru_cache
+def get_secret_cipher() -> SecretCipher:
+    return SecretCipher(get_settings().secret_encryption_key or "")
+
+
+def get_oauth_state_secret() -> str:
+    return get_settings().secret_encryption_key or ""
 
 
 @lru_cache
@@ -33,6 +58,11 @@ def get_capability_registry() -> CapabilityRegistry:
     a per-call decision)."""
     registry = CapabilityRegistry()
     registry.register(build_current_time_capability(SystemClock()))
+    provider = get_google_calendar_provider()
+    cipher = get_secret_cipher()
+    state_secret = get_oauth_state_secret()
+    registry.register(build_calendar_list_events_capability(provider, cipher, state_secret))
+    registry.register(build_calendar_free_busy_capability(provider, cipher, state_secret))
     return registry
 
 
@@ -81,3 +111,17 @@ def get_memory_extraction_orchestrator(
     gateway: ModelGatewayPort = Depends(get_model_gateway),
 ) -> MemoryExtractionOrchestrator:
     return MemoryExtractionOrchestrator(memory, gateway)
+
+
+def get_calendar_service(
+    session: AsyncSession = Depends(get_db_session),
+) -> CalendarService:
+    return CalendarService(
+        PostgresCalendarCredentialRepository(session),
+        PostgresCalendarEventRepository(session),
+        get_google_calendar_provider(),
+        get_secret_cipher(),
+        PostgresAuditRepository(session),
+        SystemClock(),
+        get_oauth_state_secret(),
+    )

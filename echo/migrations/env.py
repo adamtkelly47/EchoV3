@@ -16,6 +16,10 @@ from domains.approvals.repository import (  # noqa: F401 — registers tables on
     ApprovalDecisionRow,
     ApprovalProposalRow,
 )
+from domains.calendar.repository import (  # noqa: F401 — registers tables on Base.metadata
+    CalendarCredentialRow,
+    CalendarEventRow,
+)
 from domains.conversation.repository import (  # noqa: F401 — registers tables on Base.metadata
     ConversationSessionRow,
     MessageRow,

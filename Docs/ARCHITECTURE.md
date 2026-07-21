@@ -79,7 +79,8 @@ echo/
                          # via infrastructure/database's ToolCallRepository from Phase 4)
         portfolio/
         research/
-        calendar/
+        calendar/       # populated Phase 10: models, schemas, errors, policies, service, repository
+                         # (read-only — no write path/proposal type exists until Phase 11)
         email/
         memory/         # populated Phase 9: models, schemas, errors, policies, service, repository
         knowledge/
@@ -95,7 +96,8 @@ echo/
         brokerage/
             schwab/
         calendar/
-            google/
+            google/      # populated Phase 10: adapter.py — plain httpx against Google's REST
+                         # APIs (OAuth2 + Calendar API v3), verified live against a real account
         email/
             gmail/
         research/
@@ -108,7 +110,9 @@ echo/
         database/       # populated Phase 4: base.py, engine.py, tables/, repositories/
         queue/          # not yet populated — Redis is used directly by apps/ until a phase needs a repository-style abstraction over it
         cache/          # not yet populated
-        secrets/        # not yet populated — no secret manager integration exists yet
+        secrets/        # populated Phase 10: encryption.py — Fernet-based encryption at rest
+                         # for OAuth tokens (Docs/SECURITY.md), platform infra rather than a
+                         # provider port since it isn't a swappable vendor integration
         http/           # not yet populated
     tests/
         unit/
@@ -159,7 +163,7 @@ Cross-domain collaboration occurs only through the Application layer (`applicati
 
 ## Application Layer
 
-Per CONSTITUTION.md, `application/` contains `capabilities/`, `orchestrators/`, `workflows/`, `commands/`, `queries/` — populated one subdirectory at a time, only when something actually needs it (No Future Scaffolding). Phase 8 populated `capabilities/` (platform capabilities not owned by any single domain, e.g. `current_time`) and `orchestrators/` (`ConversationOrchestrator`, coordinating Conversation + Capabilities + the Model Gateway for one request). Phase 9 added a second orchestrator, `MemoryExtractionOrchestrator` (coordinating Memory + the Model Gateway to turn free text into candidate facts). `workflows/`, `commands/`, `queries/` remain unpopulated until a phase needs them.
+Per CONSTITUTION.md, `application/` contains `capabilities/`, `orchestrators/`, `workflows/`, `commands/`, `queries/` — populated one subdirectory at a time, only when something actually needs it (No Future Scaffolding). Phase 8 populated `capabilities/` (platform capabilities not owned by any single domain, e.g. `current_time`) and `orchestrators/` (`ConversationOrchestrator`, coordinating Conversation + Capabilities + the Model Gateway for one request). Phase 9 added a second orchestrator, `MemoryExtractionOrchestrator` (coordinating Memory + the Model Gateway to turn free text into candidate facts). Phase 10 added two more capabilities, `calendar.list_events`/`calendar.free_busy` (`application/capabilities/calendar_read.py`, wrapping `domains/calendar/`), plus `application/calendar_provider_factory.py` — a second instance of Phase 8's `model_gateway_factory.py` pattern (apps/ cannot import providers/ directly, so the Application layer constructs the concrete provider adapter and hands `apps/api/dependencies.py` a Protocol type instead). `workflows/`, `commands/`, `queries/` remain unpopulated until a phase needs them.
 
 ## File and Function Discipline
 
