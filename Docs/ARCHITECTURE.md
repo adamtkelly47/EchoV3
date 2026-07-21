@@ -80,7 +80,10 @@ echo/
         portfolio/      # populated Phase 12: models, schemas, errors, policies, service,
                          # repository — Schwab accounts/positions/balances/snapshots, reconciled
                          # against Schwab's own reported totals before being trusted
-        research/
+        research/       # populated Phase 16: errors, policies, repository, schemas, service —
+                         # provider-independent issuer identity/security master (models.py
+                         # skipped, no enum vocabulary needed yet, matching
+                         # domains/conversation/'s omission of the same optional file)
         calendar/       # populated Phase 10 (read): models, schemas, errors, policies, service,
                          # repository. Phase 11 (write) added write_adapters.py — concrete
                          # WriteAdapter/ExecutionVerifier implementations for the Approval Engine
@@ -106,12 +109,17 @@ echo/
                          # APIs (OAuth2 + Calendar API v3), verified live against a real account
         email/
             gmail/
-        research/
-            sec/
-            congressional/
-            market_data/
-            fundamentals/
-            news/
+        research/       # vendor-named subdirectories (finnhub/, sec_edgar/), matching every
+                         # other populated providers/ subtree (calendar/google/, email/gmail/,
+                         # brokerage/schwab/) — the original Phase 0 sketch here named these
+                         # by research need instead (sec/, congressional/, market_data/,
+                         # fundamentals/, news/), but a single vendor commonly serves more than
+                         # one need (Finnhub alone covers fundamentals, earnings, analyst
+                         # ratings, and company news), which the need-first sketch would have
+                         # split the same adapter across; resolved the same way ADR_0005
+                         # resolved other PROMPT.md Section 7 conflicts — this tree wins
+            finnhub/    # populated Phase 16: adapter.py — live-verified in Phase 15
+            sec_edgar/  # populated Phase 16: adapter.py — live-verified in Phase 15
     infrastructure/
         database/       # populated Phase 4: base.py, engine.py, tables/, repositories/
         queue/          # not yet populated — Redis is used directly by apps/ until a phase needs a repository-style abstraction over it
@@ -173,7 +181,7 @@ Cross-domain collaboration occurs only through the Application layer (`applicati
 
 ## Application Layer
 
-Per CONSTITUTION.md, `application/` contains `capabilities/`, `orchestrators/`, `workflows/`, `commands/`, `queries/` — populated one subdirectory at a time, only when something actually needs it (No Future Scaffolding). Phase 8 populated `capabilities/` (platform capabilities not owned by any single domain, e.g. `current_time`) and `orchestrators/` (`ConversationOrchestrator`, coordinating Conversation + Capabilities + the Model Gateway for one request). Phase 9 added a second orchestrator, `MemoryExtractionOrchestrator` (coordinating Memory + the Model Gateway to turn free text into candidate facts). Phase 10 added two more capabilities, `calendar.list_events`/`calendar.free_busy` (`application/capabilities/calendar_read.py`, wrapping `domains/calendar/`), plus `application/calendar_provider_factory.py` — a second instance of Phase 8's `model_gateway_factory.py` pattern (apps/ cannot import providers/ directly, so the Application layer constructs the concrete provider adapter and hands `apps/api/dependencies.py` a Protocol type instead). Phase 11 added a third orchestrator, `CalendarWriteOrchestrator` (coordinating Calendar + Approvals — proposing, and later executing, a calendar write through the Phase 6 Approval Engine). Phase 12 added `application/portfolio_provider_factory.py`, a third instance of the same provider-factory pattern (`build_schwab_provider`), constructing the concrete Schwab adapter and handing `apps/api/dependencies.py` a `PortfolioProviderPort` Protocol type instead. `workflows/`, `commands/`, `queries/` remain unpopulated until a phase needs them.
+Per CONSTITUTION.md, `application/` contains `capabilities/`, `orchestrators/`, `workflows/`, `commands/`, `queries/` — populated one subdirectory at a time, only when something actually needs it (No Future Scaffolding). Phase 8 populated `capabilities/` (platform capabilities not owned by any single domain, e.g. `current_time`) and `orchestrators/` (`ConversationOrchestrator`, coordinating Conversation + Capabilities + the Model Gateway for one request). Phase 9 added a second orchestrator, `MemoryExtractionOrchestrator` (coordinating Memory + the Model Gateway to turn free text into candidate facts). Phase 10 added two more capabilities, `calendar.list_events`/`calendar.free_busy` (`application/capabilities/calendar_read.py`, wrapping `domains/calendar/`), plus `application/calendar_provider_factory.py` — a second instance of Phase 8's `model_gateway_factory.py` pattern (apps/ cannot import providers/ directly, so the Application layer constructs the concrete provider adapter and hands `apps/api/dependencies.py` a Protocol type instead). Phase 11 added a third orchestrator, `CalendarWriteOrchestrator` (coordinating Calendar + Approvals — proposing, and later executing, a calendar write through the Phase 6 Approval Engine). Phase 12 added `application/portfolio_provider_factory.py`, a third instance of the same provider-factory pattern (`build_schwab_provider`), constructing the concrete Schwab adapter and handing `apps/api/dependencies.py` a `PortfolioProviderPort` Protocol type instead. Phase 16 added `application/research_provider_factory.py` (`build_research_providers`) — a variant of the same pattern returning a `dict[str, ResearchProviderPort]` rather than a single adapter, since Research registers multiple providers (Finnhub, SEC EDGAR) simultaneously; a provider with no configured credential is simply omitted from the dict rather than registered with an adapter that would fail on first use. `workflows/`, `commands/`, `queries/` remain unpopulated until a phase needs them.
 
 ## File and Function Discipline
 

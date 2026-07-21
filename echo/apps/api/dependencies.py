@@ -21,6 +21,7 @@ from application.orchestrators.calendar_writes import CalendarWriteOrchestrator
 from application.orchestrators.conversation import ConversationOrchestrator
 from application.orchestrators.memory_extraction import MemoryExtractionOrchestrator
 from application.portfolio_provider_factory import build_schwab_provider
+from application.research_provider_factory import build_research_providers
 from core.config import get_settings
 from core.time import SystemClock
 from domains.approvals.repository import (
@@ -45,6 +46,8 @@ from domains.portfolio.repository import (
     PostgresSchwabCredentialRepository,
 )
 from domains.portfolio.service import PortfolioProviderPort, PortfolioService
+from domains.research.repository import PostgresResearchRepository
+from domains.research.service import ResearchProviderPort, ResearchService
 from infrastructure.database.engine import session_scope
 from infrastructure.database.repositories.audit import PostgresAuditRepository
 from infrastructure.database.repositories.observability import PostgresToolCallRepository
@@ -63,6 +66,11 @@ def get_google_calendar_provider() -> CalendarProviderPort:
 @lru_cache
 def get_schwab_provider() -> PortfolioProviderPort:
     return build_schwab_provider(get_settings())
+
+
+@lru_cache
+def get_research_providers() -> dict[str, ResearchProviderPort]:
+    return build_research_providers(get_settings())
 
 
 @lru_cache
@@ -183,4 +191,16 @@ def get_portfolio_service(
         PostgresComputedValueRecordRepository(session),
         PostgresIPSRepository(session),
         PostgresComplianceResultRepository(session),
+    )
+
+
+def get_research_service(
+    session: AsyncSession = Depends(get_db_session),
+) -> ResearchService:
+    return ResearchService(
+        PostgresResearchRepository(session),
+        PostgresSourceRecordRepository(session),
+        get_research_providers(),
+        PostgresAuditRepository(session),
+        SystemClock(),
     )
