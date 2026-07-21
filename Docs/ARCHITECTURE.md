@@ -77,7 +77,9 @@ echo/
         capabilities/   # populated Phase 5: models, errors, policies, service (no repository.py —
                          # the registry is in-process/code-populated; only execution audit persists,
                          # via infrastructure/database's ToolCallRepository from Phase 4)
-        portfolio/
+        portfolio/      # populated Phase 12: models, schemas, errors, policies, service,
+                         # repository — Schwab accounts/positions/balances/snapshots, reconciled
+                         # against Schwab's own reported totals before being trusted
         research/
         calendar/       # populated Phase 10 (read): models, schemas, errors, policies, service,
                          # repository. Phase 11 (write) added write_adapters.py — concrete
@@ -95,7 +97,10 @@ echo/
                          # (no live API key in this dev environment)
             ollama/      # adapter.py — live-tested against the running container
         brokerage/
-            schwab/
+            schwab/      # populated Phase 12: adapter.py — plain httpx against Schwab's REST
+                         # API (OAuth2 + trader/marketdata v1), verified live against a real
+                         # connected account. HTTP Basic auth for token exchange (Schwab-specific
+                         # — not body params like Google's)
         calendar/
             google/      # populated Phase 10: adapter.py — plain httpx against Google's REST
                          # APIs (OAuth2 + Calendar API v3), verified live against a real account
@@ -164,7 +169,7 @@ Cross-domain collaboration occurs only through the Application layer (`applicati
 
 ## Application Layer
 
-Per CONSTITUTION.md, `application/` contains `capabilities/`, `orchestrators/`, `workflows/`, `commands/`, `queries/` — populated one subdirectory at a time, only when something actually needs it (No Future Scaffolding). Phase 8 populated `capabilities/` (platform capabilities not owned by any single domain, e.g. `current_time`) and `orchestrators/` (`ConversationOrchestrator`, coordinating Conversation + Capabilities + the Model Gateway for one request). Phase 9 added a second orchestrator, `MemoryExtractionOrchestrator` (coordinating Memory + the Model Gateway to turn free text into candidate facts). Phase 10 added two more capabilities, `calendar.list_events`/`calendar.free_busy` (`application/capabilities/calendar_read.py`, wrapping `domains/calendar/`), plus `application/calendar_provider_factory.py` — a second instance of Phase 8's `model_gateway_factory.py` pattern (apps/ cannot import providers/ directly, so the Application layer constructs the concrete provider adapter and hands `apps/api/dependencies.py` a Protocol type instead). Phase 11 added a third orchestrator, `CalendarWriteOrchestrator` (coordinating Calendar + Approvals — proposing, and later executing, a calendar write through the Phase 6 Approval Engine). `workflows/`, `commands/`, `queries/` remain unpopulated until a phase needs them.
+Per CONSTITUTION.md, `application/` contains `capabilities/`, `orchestrators/`, `workflows/`, `commands/`, `queries/` — populated one subdirectory at a time, only when something actually needs it (No Future Scaffolding). Phase 8 populated `capabilities/` (platform capabilities not owned by any single domain, e.g. `current_time`) and `orchestrators/` (`ConversationOrchestrator`, coordinating Conversation + Capabilities + the Model Gateway for one request). Phase 9 added a second orchestrator, `MemoryExtractionOrchestrator` (coordinating Memory + the Model Gateway to turn free text into candidate facts). Phase 10 added two more capabilities, `calendar.list_events`/`calendar.free_busy` (`application/capabilities/calendar_read.py`, wrapping `domains/calendar/`), plus `application/calendar_provider_factory.py` — a second instance of Phase 8's `model_gateway_factory.py` pattern (apps/ cannot import providers/ directly, so the Application layer constructs the concrete provider adapter and hands `apps/api/dependencies.py` a Protocol type instead). Phase 11 added a third orchestrator, `CalendarWriteOrchestrator` (coordinating Calendar + Approvals — proposing, and later executing, a calendar write through the Phase 6 Approval Engine). Phase 12 added `application/portfolio_provider_factory.py`, a third instance of the same provider-factory pattern (`build_schwab_provider`), constructing the concrete Schwab adapter and handing `apps/api/dependencies.py` a `PortfolioProviderPort` Protocol type instead. `workflows/`, `commands/`, `queries/` remain unpopulated until a phase needs them.
 
 ## File and Function Discipline
 

@@ -20,6 +20,7 @@ from application.model_gateway_factory import ModelGatewayPort, build_model_gate
 from application.orchestrators.calendar_writes import CalendarWriteOrchestrator
 from application.orchestrators.conversation import ConversationOrchestrator
 from application.orchestrators.memory_extraction import MemoryExtractionOrchestrator
+from application.portfolio_provider_factory import build_schwab_provider
 from core.config import get_settings
 from core.time import SystemClock
 from domains.approvals.repository import (
@@ -37,15 +38,26 @@ from domains.conversation.repository import PostgresConversationRepository
 from domains.conversation.service import ConversationService
 from domains.memory.repository import PostgresMemoryRepository
 from domains.memory.service import MemoryService
+from domains.portfolio.repository import (
+    PostgresPortfolioRepository,
+    PostgresSchwabCredentialRepository,
+)
+from domains.portfolio.service import PortfolioProviderPort, PortfolioService
 from infrastructure.database.engine import session_scope
 from infrastructure.database.repositories.audit import PostgresAuditRepository
 from infrastructure.database.repositories.observability import PostgresToolCallRepository
+from infrastructure.database.repositories.provenance import PostgresSourceRecordRepository
 from infrastructure.secrets.encryption import SecretCipher
 
 
 @lru_cache
 def get_google_calendar_provider() -> CalendarProviderPort:
     return build_google_calendar_provider(get_settings())
+
+
+@lru_cache
+def get_schwab_provider() -> PortfolioProviderPort:
+    return build_schwab_provider(get_settings())
 
 
 @lru_cache
@@ -149,3 +161,18 @@ def get_calendar_write_orchestrator(
     calendar: CalendarService = Depends(get_calendar_service),
 ) -> CalendarWriteOrchestrator:
     return CalendarWriteOrchestrator(approvals, calendar, get_google_calendar_provider())
+
+
+def get_portfolio_service(
+    session: AsyncSession = Depends(get_db_session),
+) -> PortfolioService:
+    return PortfolioService(
+        PostgresSchwabCredentialRepository(session),
+        PostgresPortfolioRepository(session),
+        PostgresSourceRecordRepository(session),
+        get_schwab_provider(),
+        get_secret_cipher(),
+        PostgresAuditRepository(session),
+        SystemClock(),
+        get_oauth_state_secret(),
+    )

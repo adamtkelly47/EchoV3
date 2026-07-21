@@ -41,6 +41,15 @@ class Settings(BaseSettings):
     # than under a per-domain settings block.
     secret_encryption_key: str | None = None
 
+    # Schwab OAuth (Phase 12). No separate read-only scope exists (Docs/
+    # DECISION_LOG.md's Phase 12 entry) — read-only is enforced by never
+    # calling a trading endpoint, not by what the token itself permits.
+    # redirect_uri is fixed by the registered developer app, not
+    # reconfigurable per environment (unlike Google's).
+    schwab_client_id: str | None = None
+    schwab_client_secret: str | None = None
+    schwab_redirect_uri: str = "https://127.0.0.1:8182"
+
 
 @lru_cache
 def get_settings() -> Settings:
