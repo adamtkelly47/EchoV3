@@ -53,11 +53,11 @@ docker exec echo-devcheck pip install -e ".[dev]"
 
 docker exec echo-devcheck ruff format --check .
 docker exec echo-devcheck ruff check .
-docker exec echo-devcheck mypy apps scripts core
-docker exec echo-devcheck python scripts/check_size_limits.py apps core
+docker exec echo-devcheck mypy apps scripts core infrastructure migrations
+docker exec echo-devcheck python scripts/check_size_limits.py apps core infrastructure
 docker exec echo-devcheck python scripts/check_architecture.py .
-docker exec echo-devcheck vulture apps core scripts
-docker exec echo-devcheck bandit -r apps core -c pyproject.toml
+docker exec echo-devcheck vulture apps core infrastructure scripts
+docker exec echo-devcheck bandit -r apps core infrastructure -c pyproject.toml
 docker exec echo-devcheck pip-audit
 docker exec echo-devcheck pytest --cov --cov-report=term-missing
 
@@ -65,6 +65,8 @@ docker rm -f echo-devcheck   # when done
 ```
 
 On Windows/Git Bash, prefix the `docker run` with `MSYS_NO_PATHCONV=1` — otherwise Git Bash rewrites the `-w /app` argument into a bogus Windows path. Do not use `docker cp` to sync repeated edits into a running container instead of a bind mount — `docker cp SRC_DIR CONTAINER:DEST_DIR` nests `SRC_DIR` inside an already-existing `DEST_DIR` rather than replacing its contents, which silently leaves stale files in place.
+
+`tests/integration/` requires a real `DATABASE_URL` (the `--env-file .env` above provides it) and skips gracefully when one isn't set, so it's safe in CI even without a database configured there yet. Every integration test either never commits (rolled back on teardown) or explicitly deletes what it inserted — the real Neon dev branch used for local verification should show zero rows in any table after a full test run.
 
 Frontend checks run directly with Node (already required for `npm run dev`):
 

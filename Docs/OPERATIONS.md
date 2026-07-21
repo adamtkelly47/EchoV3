@@ -43,6 +43,21 @@ docker compose logs worker                        # should show "received test j
 - If a secret is ever accidentally committed, deleting it in a later commit is **not sufficient** — git history retains it. The credential must be rotated (regenerated in Neon's console) and the old one invalidated.
 - Development and any future production credentials use separate Neon branches / separate secrets; they are never shared.
 
+## Database Migrations
+
+Schema changes go through Alembic (`echo/migrations/`), never hand-run SQL (`CONSTITUTION.md`: Migrations). Migrations run against the deployed `backend` container, which has the same code and `DATABASE_URL` as the running app:
+
+```bash
+docker compose exec backend alembic current           # what revision is applied
+docker compose exec backend alembic upgrade head       # apply pending migrations
+docker compose exec backend alembic downgrade -1        # revert the last migration
+docker compose exec backend alembic revision --autogenerate -m "add portfolio tables"  # after adding/changing ORM models
+```
+
+Autogenerate compares `infrastructure/database/tables/` (via `infrastructure/database/base.Base.metadata`) against the live database — review the generated migration before applying it; autogenerate detects structural changes but not every intent (e.g. column renames show up as drop+add unless edited by hand).
+
+Neon-specific note: `infrastructure/database/engine.py` strips `sslmode`/`channel_binding` from the connection string and translates them into asyncpg's own `ssl=` connect arg, and disables asyncpg's prepared-statement cache (`statement_cache_size=0`). Both are required for the pooled (`-pooler`) endpoint — asyncpg's `connect()` has no `sslmode` parameter, and Neon's pooler runs PgBouncer in transaction mode, which doesn't support asyncpg's server-side prepared-statement cache across pooled connections. If you ever bypass `create_engine()` and construct a connection another way, both issues resurface.
+
 ## Ollama Models
 
 The `ollama` container starts with no models pulled — pulling a model is a multi-gigabyte download and is not required for Phase 1's reachability check. To pull a model for later phases (once model-gateway work begins in Phase 7):
@@ -53,8 +68,8 @@ docker compose exec ollama ollama pull <model-name>
 
 Model selection itself is a Phase 7 decision (`MODEL_ROUTING.md`), not made here.
 
-## Known Limitations (Phase 1)
+## Known Limitations (as of Phase 4)
 
-- No formatting/linting/type-checking/CI is wired in yet — that is Phase 2's deliverable. Code in `echo/` and `frontend/` has been written carefully but not mechanically verified against the standards in `TESTING.md`.
-- The worker/scheduler test job (`echo:jobs:test` on Redis) is throwaway plumbing to prove the queue works end to end. It is replaced by the real typed Job Envelope contract in Phase 3.
-- `apps/api/main.py` reads configuration directly from environment variables. Centralized `core/config` lands in Phase 3.
+- The worker/scheduler test job (`echo:jobs:test` on Redis) is still throwaway plumbing to prove the queue works end to end — it has not been upgraded to the real typed `core.jobs.JobEnvelope` contract. That happens once a real job type is introduced (Phase 24 or earlier).
+- No domain owns the tables in `infrastructure/database/tables/` yet — they are cross-cutting platform tables (audit, jobs, provenance, model/tool call telemetry). Domain-specific tables (Portfolio positions, Calendar events, etc.) begin Phase 8+.
+- Nothing in `apps/` reads from or writes to the database yet. The repository layer exists and is verified against real Postgres, but no request path calls it — that begins with the Capability Registry (Phase 5).

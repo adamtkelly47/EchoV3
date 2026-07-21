@@ -47,24 +47,27 @@ jobs:
         run: ruff check .
 
       - name: Type check (mypy)
-        run: mypy apps scripts core
+        run: mypy apps scripts core infrastructure migrations
 
       - name: File/function size limits
-        run: python scripts/check_size_limits.py apps core
+        run: python scripts/check_size_limits.py apps core infrastructure
 
       - name: Architecture / import boundary check
         run: python scripts/check_architecture.py .
 
       - name: Dead code (vulture)
-        run: vulture apps core scripts
+        run: vulture apps core infrastructure scripts
 
       - name: Security scan (bandit)
-        run: bandit -r apps core -c pyproject.toml
+        run: bandit -r apps core infrastructure -c pyproject.toml
 
       - name: Dependency vulnerability scan (pip-audit)
         run: pip-audit
 
       - name: Tests (pytest + coverage)
+        # No DATABASE_URL secret is configured in this workflow yet —
+        # tests/integration/ skips itself gracefully rather than failing
+        # (see Docs/TESTING.md). Verified for real against Neon locally.
         run: pytest --cov --cov-report=term-missing
 
   frontend:

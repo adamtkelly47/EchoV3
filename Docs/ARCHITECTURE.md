@@ -94,11 +94,11 @@ echo/
             fundamentals/
             news/
     infrastructure/
-        database/
-        queue/
-        cache/
-        secrets/
-        http/
+        database/       # populated Phase 4: base.py, engine.py, tables/, repositories/
+        queue/          # not yet populated — Redis is used directly by apps/ until a phase needs a repository-style abstraction over it
+        cache/          # not yet populated
+        secrets/        # not yet populated — no secret manager integration exists yet
+        http/           # not yet populated
     api/
         routes/
         schemas/
@@ -106,14 +106,16 @@ echo/
         middleware/
     tests/
         unit/
-        integration/
+        integration/    # populated Phase 4: repository tests against the real Neon dev branch
         contract/
         end_to_end/
         fixtures/
         architecture/
     scripts/
-    migrations/
+    migrations/         # populated Phase 4: Alembic env.py + versions/
 ```
+
+`echo/alembic.ini` sits at the `echo/` root (sibling to `pyproject.toml`), not nested under `migrations/` — Alembic's own convention.
 
 (`Docs/` lives once, at the repository root, per the outer tree above — it is not duplicated inside `echo/`.)
 

@@ -15,7 +15,7 @@ A generic chatbot wrapper, a collection of disconnected agents, a system where a
 
 ## Current Phase
 
-**Phase 3 — Core runtime contracts.** Phases 0-2 (governing documents, Docker foundation, quality/CI) are complete. Phase 3 adds the stable typed primitives every future domain depends on: `core/config`, `core/time` (clock abstraction), `core/identifiers`, `core/errors`, `core/logging`, `core/observability` (correlation context), `core/provenance`, `core/events` (event envelope), `core/jobs` (job envelope), `core/security` (permission classification), `core/capabilities` (capability contract). No domain/business logic exists yet — domains begin Phase 5+. Do not begin Phase 4 without explicit instruction.
+**Phase 4 — Database and repository foundation.** Phases 0-3 (governing documents, Docker foundation, quality/CI, core runtime contracts) are complete. Phase 4 establishes Neon Postgres as the durable system of record for real: Alembic migrations (`echo/migrations/`), session management and transaction boundaries (`infrastructure/database/engine.py`), and repositories for the cross-cutting platform tables — audit events, jobs, source/computed-value provenance records, model calls, tool calls. Verified against the real Neon dev branch, not a mock. No domain/business logic exists yet — domains begin Phase 5+. Do not begin Phase 5 without explicit instruction.
 
 ## How to Read These Docs
 
