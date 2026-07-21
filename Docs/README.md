@@ -15,7 +15,7 @@ A generic chatbot wrapper, a collection of disconnected agents, a system where a
 
 ## Current Phase
 
-**Phase 2 — Quality enforcement and continuous integration.** Phases 0 (governing documents) and 1 (Docker foundation) are complete. Phase 2 adds formatting, linting, strict type checking, custom file/function-size and architecture/import-boundary checkers (both unit-tested against synthetic violations), dead-code and security scanning, dependency-vulnerability scanning, secret scanning, and a CI workflow — see `TESTING.md`. No domain/business logic exists yet. Do not begin Phase 3 without explicit instruction.
+**Phase 3 — Core runtime contracts.** Phases 0-2 (governing documents, Docker foundation, quality/CI) are complete. Phase 3 adds the stable typed primitives every future domain depends on: `core/config`, `core/time` (clock abstraction), `core/identifiers`, `core/errors`, `core/logging`, `core/observability` (correlation context), `core/provenance`, `core/events` (event envelope), `core/jobs` (job envelope), `core/security` (permission classification), `core/capabilities` (capability contract). No domain/business logic exists yet — domains begin Phase 5+. Do not begin Phase 4 without explicit instruction.
 
 ## How to Read These Docs
 

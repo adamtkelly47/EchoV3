@@ -53,11 +53,11 @@ docker exec echo-devcheck pip install -e ".[dev]"
 
 docker exec echo-devcheck ruff format --check .
 docker exec echo-devcheck ruff check .
-docker exec echo-devcheck mypy apps scripts
-docker exec echo-devcheck python scripts/check_size_limits.py apps
+docker exec echo-devcheck mypy apps scripts core
+docker exec echo-devcheck python scripts/check_size_limits.py apps core
 docker exec echo-devcheck python scripts/check_architecture.py .
-docker exec echo-devcheck vulture apps scripts
-docker exec echo-devcheck bandit -r apps -c pyproject.toml
+docker exec echo-devcheck vulture apps core scripts
+docker exec echo-devcheck bandit -r apps core -c pyproject.toml
 docker exec echo-devcheck pip-audit
 docker exec echo-devcheck pytest --cov --cov-report=term-missing
 

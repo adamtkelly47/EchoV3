@@ -12,6 +12,7 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY pyproject.toml ./
+COPY core ./core
 COPY apps ./apps
 
 # Base image's bundled pip has known advisories (pip-audit) — upgrade first.

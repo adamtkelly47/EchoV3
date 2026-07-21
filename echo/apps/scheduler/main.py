@@ -1,29 +1,30 @@
-"""Phase 1 scaffolding only: proves the scheduler container boots and can
-enqueue work for the worker via Redis. This is not the real schedule
-definition system (cadences, quiet hours, duplicate-execution prevention) —
-that is a Phase 24 (Proactive monitoring foundation) concern built on top of
-the Phase 3 job envelope. The scheduler never performs domain work itself,
-per Docs/DOMAIN_OWNERSHIP.md and CONSTITUTION.md.
+"""Scheduler entrypoint. Still enqueues the Phase 1 throwaway test job — see
+apps/worker/main.py for why that isn't upgraded to the real JobEnvelope
+contract yet. This is not the real schedule definition system (cadences,
+quiet hours, duplicate-execution prevention) — that is a Phase 24
+(Proactive monitoring foundation) concern. The scheduler never performs
+domain work itself, per Docs/DOMAIN_OWNERSHIP.md and CONSTITUTION.md.
 """
 
 import asyncio
 import json
-import logging
-import os
 from datetime import UTC, datetime
 
 from redis.asyncio import Redis
 
-logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
-logger = logging.getLogger("echo.scheduler")
+from core.config import get_settings
+from core.logging import configure_logging, get_logger
 
-REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+settings = get_settings()
+configure_logging(settings.log_level)
+logger = get_logger("echo.scheduler")
+
 TEST_QUEUE_KEY = "echo:jobs:test"
 INTERVAL_SECONDS = 30
 
 
 async def run() -> None:
-    client = Redis.from_url(REDIS_URL)
+    client = Redis.from_url(settings.redis_url)
     logger.info("scheduler started, enqueuing a test job every %ss", INTERVAL_SECONDS)
     try:
         while True:

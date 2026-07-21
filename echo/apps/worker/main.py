@@ -1,25 +1,28 @@
-"""Phase 1 scaffolding only: proves the worker container boots and can
-consume a job off the Redis queue end-to-end. This is not the typed Job
-Envelope contract (job type, version, input schema, idempotency key, retry
-policy, timeout, provenance requirements, output schema, failure
-classification) — that lands in Phase 3 (Docs/ARCHITECTURE.md, core/).
+"""Worker entrypoint. Still consumes the throwaway `echo:jobs:test` string
+payload from Phase 1 — that gets replaced by the real `core.jobs.JobEnvelope`
+contract (proven independently via unit tests this phase) once a real job
+type is introduced (Phase 24+). This module now wires the Phase 3 core
+contracts (config, logging, correlation) in place of the Phase 1 ad hoc
+`os.environ`/`logging.basicConfig` calls.
 """
 
 import asyncio
-import logging
-import os
 
 from redis.asyncio import Redis
 
-logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
-logger = logging.getLogger("echo.worker")
+from core.config import get_settings
+from core.logging import configure_logging, get_logger
+from core.observability import correlation_scope
 
-REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+settings = get_settings()
+configure_logging(settings.log_level)
+logger = get_logger("echo.worker")
+
 TEST_QUEUE_KEY = "echo:jobs:test"
 
 
 async def run() -> None:
-    client = Redis.from_url(REDIS_URL)
+    client = Redis.from_url(settings.redis_url)
     logger.info("worker started, listening on %s", TEST_QUEUE_KEY)
     try:
         while True:
@@ -27,7 +30,8 @@ async def run() -> None:
             if item is None:
                 continue
             _, payload = item
-            logger.info("received test job: %s", payload.decode("utf-8"))
+            with correlation_scope():
+                logger.info("received test job: %s", payload.decode("utf-8"))
     finally:
         await client.close()
 

@@ -51,12 +51,18 @@ echo/
         config/         # centralized configuration
         errors/         # common error taxonomy
         logging/        # structured logging
-        security/       # auth/authz primitives, secret access
+        security/       # permission classification (Phase 3); secret access lands with a later phase
         time/           # clock abstraction
         identifiers/    # id generation
         provenance/     # source record + computed value contracts
-        events/         # event envelope contract
+        events/         # generic event envelope contract
+        jobs/           # generic job envelope contract — added in Phase 3, not the original
+                        # Section 7 tree; kept distinct from events/ since a job is work still
+                        # to be done, not a completed business fact (see ADR reasoning in
+                        # Docs/DECISION_LOG.md's Phase 3 entry)
         observability/  # correlation context, metrics, tracing
+        capabilities/   # the generic capability *contract* shape (Phase 3) — not the registry,
+                        # which the Capabilities domain owns starting Phase 5
     domains/
         conversation/
         approvals/
