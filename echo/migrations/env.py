@@ -30,6 +30,8 @@ from domains.memory.repository import (  # noqa: F401 — registers tables on Ba
 from domains.portfolio.repository import (  # noqa: F401 — registers tables on Base.metadata
     AccountBalanceRow,
     AccountRow,
+    ComplianceResultRow,
+    IPSVersionRow,
     PortfolioSnapshotRow,
     PositionRow,
     SchwabCredentialRow,

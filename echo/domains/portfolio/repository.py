@@ -17,7 +17,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Protocol
 
-from sqlalchemy import Boolean, DateTime, Float, String, select
+from sqlalchemy import Boolean, DateTime, Float, Integer, String, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
@@ -26,8 +26,14 @@ from domains.portfolio.models import AssetType
 from domains.portfolio.schemas import (
     Account,
     AccountBalance,
+    AllocationRange,
+    ComplianceBreach,
+    ComplianceResult,
+    ConcentrationRule,
+    IPSVersion,
     PortfolioSnapshot,
     Position,
+    RestrictedSecurity,
     SchwabCredential,
 )
 from infrastructure.database.base import Base
@@ -108,6 +114,64 @@ class SchwabRawResponseRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class IPSVersionRow(Base):
+    __tablename__ = "portfolio_ips_versions"
+
+    version_id: Mapped[str] = mapped_column(String, primary_key=True)
+    ips_id: Mapped[str] = mapped_column(String, index=True)
+    version_number: Mapped[int] = mapped_column(Integer)
+    user_id: Mapped[str] = mapped_column(String, index=True)
+    account_ids: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    allocation_ranges: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    concentration_max_percent: Mapped[float] = mapped_column(Float)
+    restricted_securities: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    # Exactly one active row per ips_id at a time (Docs/DATA_MODEL.md /
+    # PROMPT.md Phase 14 verification 3) — flipping this flag on a
+    # superseded version is not "rewriting" it: its rules never change,
+    # only which version is current.
+    is_active: Mapped[bool] = mapped_column(Boolean, index=True)
+
+
+class ComplianceResultRow(Base):
+    __tablename__ = "portfolio_compliance_results"
+
+    result_id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String, index=True)
+    ips_version_id: Mapped[str] = mapped_column(String, index=True)
+    snapshot_id: Mapped[str] = mapped_column(String)
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    compliant: Mapped[bool] = mapped_column(Boolean)
+    breaches: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
+
+
+def _row_to_ips_version(row: IPSVersionRow) -> IPSVersion:
+    return IPSVersion(
+        version_id=row.version_id,
+        ips_id=row.ips_id,
+        version_number=row.version_number,
+        user_id=row.user_id,
+        account_ids=list(row.account_ids),
+        allocation_ranges=[AllocationRange(**r) for r in row.allocation_ranges],
+        concentration_rule=ConcentrationRule(max_position_percent=row.concentration_max_percent),
+        restricted_securities=[RestrictedSecurity(**r) for r in row.restricted_securities],
+        created_at=row.created_at,
+        is_active=row.is_active,
+    )
+
+
+def _row_to_compliance_result(row: ComplianceResultRow) -> ComplianceResult:
+    return ComplianceResult(
+        result_id=row.result_id,
+        user_id=row.user_id,
+        ips_version_id=row.ips_version_id,
+        snapshot_id=row.snapshot_id,
+        evaluated_at=row.evaluated_at,
+        compliant=row.compliant,
+        breaches=[ComplianceBreach(**b) for b in row.breaches],
+    )
+
+
 class SchwabCredentialRepository(Protocol):
     async def save(self, credential: SchwabCredential) -> None: ...
     async def get_for_user(self, user_id: str) -> SchwabCredential | None: ...
@@ -121,11 +185,24 @@ class PortfolioRepository(Protocol):
     async def list_all_positions(self, user_id: str) -> list[Position]: ...
     async def save_balance(self, balance: AccountBalance) -> None: ...
     async def get_latest_balance(self, account_id: str) -> AccountBalance | None: ...
+    async def list_latest_balances(self, user_id: str) -> list[AccountBalance]: ...
     async def save_snapshot(self, snapshot: PortfolioSnapshot) -> None: ...
     async def get_latest_snapshot(self, user_id: str) -> PortfolioSnapshot | None: ...
     async def save_raw_response(
         self, raw_response_id: str, payload: dict[str, Any], now: datetime
     ) -> None: ...
+
+
+class IPSRepository(Protocol):
+    async def save_version(self, version: IPSVersion) -> None: ...
+    async def get_active(self, user_id: str) -> IPSVersion | None: ...
+    async def get_version(self, version_id: str) -> IPSVersion | None: ...
+    async def list_versions(self, user_id: str) -> list[IPSVersion]: ...
+
+
+class ComplianceResultRepository(Protocol):
+    async def save(self, result: ComplianceResult) -> None: ...
+    async def get_latest(self, user_id: str) -> ComplianceResult | None: ...
 
 
 class PostgresSchwabCredentialRepository:
@@ -353,6 +430,31 @@ class PostgresPortfolioRepository:
             synced_at=row.synced_at,
         )
 
+    async def list_latest_balances(self, user_id: str) -> list[AccountBalance]:
+        """One row per account — the most recent balance recorded for it —
+        used by IPS compliance evaluation (PROMPT.md Phase 14), which needs
+        every account's cash contribution, not just a single account's."""
+        result = await self._session.execute(
+            select(AccountBalanceRow)
+            .where(AccountBalanceRow.user_id == user_id)
+            .order_by(AccountBalanceRow.synced_at.desc())
+        )
+        latest_by_account: dict[str, AccountBalanceRow] = {}
+        for row in result.scalars().all():
+            latest_by_account.setdefault(row.account_id, row)
+        return [
+            AccountBalance(
+                balance_id=row.balance_id,
+                account_id=row.account_id,
+                user_id=row.user_id,
+                cash_balance=row.cash_balance,
+                schwab_reported_total=row.schwab_reported_total,
+                source_record_id=row.source_record_id,
+                synced_at=row.synced_at,
+            )
+            for row in latest_by_account.values()
+        ]
+
     async def save_snapshot(self, snapshot: PortfolioSnapshot) -> None:
         # Immutable (Docs/DATA_MODEL.md) — always an insert, never an update.
         self._session.add(
@@ -397,3 +499,92 @@ class PostgresPortfolioRepository:
             SchwabRawResponseRow(raw_response_id=raw_response_id, payload=payload, created_at=now)
         )
         await self._session.flush()
+
+
+class PostgresIPSRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def save_version(self, version: IPSVersion) -> None:
+        """Every version row is immutable once written — inserted, never
+        updated. The one exception is `is_active`: activating a new version
+        for the same `ips_id` flips the previously active row's flag off in
+        the same call, since "exactly one active version" is a real
+        invariant (PROMPT.md Phase 14 verification 3), not a rewrite of
+        that prior version's actual rules."""
+        if version.is_active:
+            result = await self._session.execute(
+                select(IPSVersionRow).where(
+                    IPSVersionRow.ips_id == version.ips_id, IPSVersionRow.is_active.is_(True)
+                )
+            )
+            for previously_active in result.scalars().all():
+                previously_active.is_active = False
+        self._session.add(
+            IPSVersionRow(
+                version_id=version.version_id,
+                ips_id=version.ips_id,
+                version_number=version.version_number,
+                user_id=version.user_id,
+                account_ids=version.account_ids,
+                allocation_ranges=[r.model_dump(mode="json") for r in version.allocation_ranges],
+                concentration_max_percent=version.concentration_rule.max_position_percent,
+                restricted_securities=[
+                    r.model_dump(mode="json") for r in version.restricted_securities
+                ],
+                created_at=version.created_at,
+                is_active=version.is_active,
+            )
+        )
+        await self._session.flush()
+
+    async def get_active(self, user_id: str) -> IPSVersion | None:
+        result = await self._session.execute(
+            select(IPSVersionRow).where(
+                IPSVersionRow.user_id == user_id, IPSVersionRow.is_active.is_(True)
+            )
+        )
+        row = result.scalar_one_or_none()
+        return _row_to_ips_version(row) if row is not None else None
+
+    async def get_version(self, version_id: str) -> IPSVersion | None:
+        row = await self._session.get(IPSVersionRow, version_id)
+        return _row_to_ips_version(row) if row is not None else None
+
+    async def list_versions(self, user_id: str) -> list[IPSVersion]:
+        result = await self._session.execute(
+            select(IPSVersionRow)
+            .where(IPSVersionRow.user_id == user_id)
+            .order_by(IPSVersionRow.version_number.desc())
+        )
+        return [_row_to_ips_version(row) for row in result.scalars().all()]
+
+
+class PostgresComplianceResultRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def save(self, result: ComplianceResult) -> None:
+        # Immutable (Docs/DATA_MODEL.md) — always an insert, never an update.
+        self._session.add(
+            ComplianceResultRow(
+                result_id=result.result_id,
+                user_id=result.user_id,
+                ips_version_id=result.ips_version_id,
+                snapshot_id=result.snapshot_id,
+                evaluated_at=result.evaluated_at,
+                compliant=result.compliant,
+                breaches=[b.model_dump(mode="json") for b in result.breaches],
+            )
+        )
+        await self._session.flush()
+
+    async def get_latest(self, user_id: str) -> ComplianceResult | None:
+        result = await self._session.execute(
+            select(ComplianceResultRow)
+            .where(ComplianceResultRow.user_id == user_id)
+            .order_by(ComplianceResultRow.evaluated_at.desc())
+            .limit(1)
+        )
+        row = result.scalar_one_or_none()
+        return _row_to_compliance_result(row) if row is not None else None

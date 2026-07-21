@@ -4,14 +4,22 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from domains.portfolio.models import AssetType
 from domains.portfolio.repository import (
+    PostgresComplianceResultRepository,
+    PostgresIPSRepository,
     PostgresPortfolioRepository,
     PostgresSchwabCredentialRepository,
 )
 from domains.portfolio.schemas import (
     Account,
     AccountBalance,
+    AllocationRange,
+    ComplianceBreach,
+    ComplianceResult,
+    ConcentrationRule,
+    IPSVersion,
     PortfolioSnapshot,
     Position,
+    RestrictedSecurity,
     SchwabCredential,
 )
 
@@ -181,3 +189,134 @@ async def test_raw_response_save(db_session: AsyncSession) -> None:
     # No get() on the Protocol — this exercises the insert path itself
     # doesn't raise; the real read path is core.provenance's SourceRecord
     # pointing at raw_storage_ref, tested at the service layer.
+
+
+async def test_list_latest_balances_returns_one_row_per_account(db_session: AsyncSession) -> None:
+    repo = PostgresPortfolioRepository(db_session)
+    await repo.save_balance(
+        AccountBalance(
+            account_id="account_1",
+            user_id="user_1",
+            cash_balance=1000.0,
+            schwab_reported_total=1000.0,
+            source_record_id="s1",
+            synced_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+    )
+    await repo.save_balance(
+        AccountBalance(
+            account_id="account_1",
+            user_id="user_1",
+            cash_balance=2000.0,
+            schwab_reported_total=2000.0,
+            source_record_id="s2",
+            synced_at=datetime(2026, 1, 2, tzinfo=UTC),
+        )
+    )
+    await repo.save_balance(
+        AccountBalance(
+            account_id="account_2",
+            user_id="user_1",
+            cash_balance=500.0,
+            schwab_reported_total=500.0,
+            source_record_id="s3",
+            synced_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+    )
+
+    balances = await repo.list_latest_balances("user_1")
+
+    assert len(balances) == 2
+    by_account = {b.account_id: b for b in balances}
+    assert by_account["account_1"].cash_balance == 2000.0  # the later of the two
+    assert by_account["account_2"].cash_balance == 500.0
+
+
+async def test_ips_version_save_and_get_active_round_trips(db_session: AsyncSession) -> None:
+    repo = PostgresIPSRepository(db_session)
+    version = IPSVersion(
+        ips_id="ips_1",
+        version_number=1,
+        user_id="user_1",
+        account_ids=["account_1"],
+        allocation_ranges=[
+            AllocationRange(asset_type=AssetType.EQUITY, min_percent=40.0, max_percent=80.0)
+        ],
+        concentration_rule=ConcentrationRule(max_position_percent=25.0),
+        restricted_securities=[RestrictedSecurity(symbol="TSLA", reason="too volatile")],
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        is_active=True,
+    )
+    await repo.save_version(version)
+
+    active = await repo.get_active("user_1")
+    assert active is not None
+    assert active.version_id == version.version_id
+    assert active.allocation_ranges[0].asset_type == AssetType.EQUITY
+    assert active.allocation_ranges[0].max_percent == 80.0
+    assert active.restricted_securities[0].symbol == "TSLA"
+    assert active.concentration_rule.max_position_percent == 25.0
+
+
+async def test_ips_version_save_supersedes_previous_active_version(
+    db_session: AsyncSession,
+) -> None:
+    """PROMPT.md Phase 14 verification 3: only one version is ever active
+    at a time — activating a new one deactivates the prior one without
+    rewriting its stored rules."""
+    repo = PostgresIPSRepository(db_session)
+    first = IPSVersion(
+        ips_id="ips_1",
+        version_number=1,
+        user_id="user_1",
+        concentration_rule=ConcentrationRule(max_position_percent=25.0),
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        is_active=True,
+    )
+    await repo.save_version(first)
+    second = IPSVersion(
+        ips_id="ips_1",
+        version_number=2,
+        user_id="user_1",
+        concentration_rule=ConcentrationRule(max_position_percent=15.0),
+        created_at=datetime(2026, 1, 2, tzinfo=UTC),
+        is_active=True,
+    )
+    await repo.save_version(second)
+
+    active = await repo.get_active("user_1")
+    assert active is not None
+    assert active.version_id == second.version_id
+
+    versions = await repo.list_versions("user_1")
+    assert len(versions) == 2
+    stored_first = next(v for v in versions if v.version_id == first.version_id)
+    assert stored_first.is_active is False
+    assert stored_first.concentration_rule.max_position_percent == 25.0  # untouched
+
+
+async def test_compliance_result_save_and_get_latest_round_trips(db_session: AsyncSession) -> None:
+    repo = PostgresComplianceResultRepository(db_session)
+    result = ComplianceResult(
+        user_id="user_1",
+        ips_version_id="ipsver_1",
+        snapshot_id="snapshot_1",
+        evaluated_at=datetime(2026, 1, 1, tzinfo=UTC),
+        compliant=False,
+        breaches=[
+            ComplianceBreach(
+                rule_type="concentration",
+                description="AAPL is 42% of tracked value",
+                detail={"symbol": "AAPL", "weight_percent": 42.0},
+            )
+        ],
+    )
+    await repo.save(result)
+
+    latest = await repo.get_latest("user_1")
+    assert latest is not None
+    assert latest.ips_version_id == "ipsver_1"
+    assert latest.snapshot_id == "snapshot_1"
+    assert latest.compliant is False
+    assert latest.breaches[0].rule_type == "concentration"
+    assert latest.breaches[0].detail["symbol"] == "AAPL"

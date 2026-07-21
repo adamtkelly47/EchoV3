@@ -62,3 +62,24 @@ class PortfolioSnapshotNotFoundError(EchoError):
     retryable = False
     severity = Severity.LOW
     http_status = 404
+
+
+class NoActiveIPSError(EchoError):
+    """Compliance evaluation (PROMPT.md Phase 14) requires a written,
+    versioned strategy document to evaluate against — there is deliberately
+    no implicit default policy to fall back to."""
+
+    code = "no_active_ips"
+    retryable = False
+    severity = Severity.LOW
+    http_status = 404
+
+
+class IPSValidationError(EchoError):
+    """A malformed IPS edit (e.g. an allocation range with min > max) — a
+    user input error, not a provider or system failure."""
+
+    code = "ips_validation_failed"
+    retryable = False
+    severity = Severity.LOW
+    http_status = 400

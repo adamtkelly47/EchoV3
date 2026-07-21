@@ -6,6 +6,8 @@ from core.provenance import ComputedValueRecord
 from domains.portfolio.schemas import (
     Account,
     AccountBalance,
+    ComplianceResult,
+    IPSVersion,
     PortfolioSnapshot,
     Position,
     SchwabCredential,
@@ -69,6 +71,13 @@ class FakePortfolioRepository:
         matches = [b for b in self.balances if b.account_id == account_id]
         return matches[-1] if matches else None
 
+    async def list_latest_balances(self, user_id: str) -> list[AccountBalance]:
+        latest_by_account: dict[str, AccountBalance] = {}
+        for b in self.balances:
+            if b.user_id == user_id:
+                latest_by_account[b.account_id] = b
+        return list(latest_by_account.values())
+
     async def save_snapshot(self, snapshot: PortfolioSnapshot) -> None:
         self.snapshots.append(snapshot)
 
@@ -80,6 +89,47 @@ class FakePortfolioRepository:
         self, raw_response_id: str, payload: dict[str, Any], now: Any
     ) -> None:
         self.raw_responses[raw_response_id] = payload
+
+
+class FakeIPSRepository:
+    def __init__(self) -> None:
+        self.versions: list[IPSVersion] = []
+
+    async def save_version(self, version: IPSVersion) -> None:
+        """Mirrors the real PostgresIPSRepository's "exactly one active
+        version per ips_id" invariant, so a service-level test exercising
+        two consecutive edits is meaningful."""
+        if version.is_active:
+            for existing in self.versions:
+                if existing.ips_id == version.ips_id and existing.is_active:
+                    idx = self.versions.index(existing)
+                    self.versions[idx] = existing.model_copy(update={"is_active": False})
+        self.versions.append(version)
+
+    async def get_active(self, user_id: str) -> IPSVersion | None:
+        matches = [v for v in self.versions if v.user_id == user_id and v.is_active]
+        return matches[-1] if matches else None
+
+    async def get_version(self, version_id: str) -> IPSVersion | None:
+        for v in self.versions:
+            if v.version_id == version_id:
+                return v
+        return None
+
+    async def list_versions(self, user_id: str) -> list[IPSVersion]:
+        return [v for v in self.versions if v.user_id == user_id]
+
+
+class FakeComplianceResultRepository:
+    def __init__(self) -> None:
+        self.results: list[ComplianceResult] = []
+
+    async def save(self, result: ComplianceResult) -> None:
+        self.results.append(result)
+
+    async def get_latest(self, user_id: str) -> ComplianceResult | None:
+        matches = [r for r in self.results if r.user_id == user_id]
+        return matches[-1] if matches else None
 
 
 class FakeSourceRecordRepository:

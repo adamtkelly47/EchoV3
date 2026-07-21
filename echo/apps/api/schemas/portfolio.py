@@ -7,8 +7,9 @@ convention.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class CompleteAuthorizationRequest(BaseModel):
@@ -133,3 +134,70 @@ class MoneyDashboardResponse(BaseModel):
     total_unrealized_gain_loss_dollar: float | None
     warnings: list[str]
     computed_value_record_id: str
+
+
+class AllocationRangeRequest(BaseModel):
+    asset_type: str
+    min_percent: float
+    max_percent: float
+
+
+class RestrictedSecurityRequest(BaseModel):
+    symbol: str
+    reason: str | None = None
+
+
+class CreateIPSVersionRequest(BaseModel):
+    """`ips_id=None` starts a brand-new IPS document; an existing `ips_id`
+    supersedes its current active version with a new one (PROMPT.md Phase 14
+    implement item 3: "versioning")."""
+
+    ips_id: str | None = None
+    account_ids: list[str] = Field(default_factory=list)
+    allocation_ranges: list[AllocationRangeRequest] = Field(default_factory=list)
+    max_position_percent: float
+    restricted_securities: list[RestrictedSecurityRequest] = Field(default_factory=list)
+
+
+class AllocationRangeResponse(BaseModel):
+    asset_type: str
+    min_percent: float
+    max_percent: float
+
+
+class RestrictedSecurityResponse(BaseModel):
+    symbol: str
+    reason: str | None
+
+
+class IPSVersionResponse(BaseModel):
+    version_id: str
+    ips_id: str
+    version_number: int
+    user_id: str
+    account_ids: list[str]
+    allocation_ranges: list[AllocationRangeResponse]
+    max_position_percent: float
+    restricted_securities: list[RestrictedSecurityResponse]
+    created_at: datetime
+    is_active: bool
+
+
+class IPSVersionListResponse(BaseModel):
+    versions: list[IPSVersionResponse]
+
+
+class ComplianceBreachResponse(BaseModel):
+    rule_type: str
+    description: str
+    detail: dict[str, Any]
+
+
+class ComplianceResultResponse(BaseModel):
+    result_id: str
+    user_id: str
+    ips_version_id: str
+    snapshot_id: str
+    evaluated_at: datetime
+    compliant: bool
+    breaches: list[ComplianceBreachResponse]

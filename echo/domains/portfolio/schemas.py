@@ -9,6 +9,7 @@ shall never receive a Schwab SDK object.").
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -199,3 +200,70 @@ class MoneyDashboard(BaseModel):
     total_unrealized_gain_loss_dollar: float | None
     warnings: list[str] = Field(default_factory=list)
     computed_value_record_id: str
+
+
+class AllocationRange(BaseModel):
+    asset_type: AssetType
+    min_percent: float = Field(ge=0, le=100)
+    max_percent: float = Field(ge=0, le=100)
+
+
+class ConcentrationRule(BaseModel):
+    """Generalizes Phase 13's hardcoded `_DEFAULT_CONCENTRATION_THRESHOLD_PERCENT`
+    into a real, user-authored rule (Docs/DECISION_LOG.md's Phase 13 entry
+    said as much: "used until an Investment Policy Statement ... can supply
+    a user-specific one")."""
+
+    max_position_percent: float = Field(gt=0, le=100)
+
+
+class RestrictedSecurity(BaseModel):
+    symbol: str
+    reason: str | None = None
+
+
+class IPSVersion(BaseModel):
+    """A written, versioned strategy constraint document (PROMPT.md Phase 14).
+    Immutable once created (Docs/DATA_MODEL.md: Immutability, same pattern
+    as PortfolioSnapshot) — editing an IPS never mutates a prior version's
+    rules, it supersedes it with a new one (verification 3: "updating an IPS
+    does not rewrite historical evaluations"). `ips_id` is stable across a
+    user's versions; `version_number` increments; `is_active` marks the
+    single current version driving new compliance evaluations."""
+
+    version_id: str = Field(default_factory=lambda: new_id("ipsver"))
+    ips_id: str
+    version_number: int
+    user_id: str
+    # Empty means "applies to every account" — a real, explicit choice, not
+    # an accidental omission (PROMPT.md Phase 14 implement item 4).
+    account_ids: list[str] = Field(default_factory=list)
+    allocation_ranges: list[AllocationRange] = Field(default_factory=list)
+    concentration_rule: ConcentrationRule
+    restricted_securities: list[RestrictedSecurity] = Field(default_factory=list)
+    created_at: datetime
+    is_active: bool
+
+
+class ComplianceBreach(BaseModel):
+    rule_type: str
+    description: str
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+
+class ComplianceResult(BaseModel):
+    """Immutable evaluation record (PROMPT.md Phase 14 verification 2/3):
+    cites both the exact `ips_version_id` and `snapshot_id` it was evaluated
+    against, so a later IPS edit or portfolio sync can never retroactively
+    change what this result says. `domains/portfolio/policies.py`'s
+    `evaluate_compliance` is the only thing that produces `breaches` — it is
+    a pure function with no I/O (verification 1: "IPS rules are
+    deterministic")."""
+
+    result_id: str = Field(default_factory=lambda: new_id("compliance"))
+    user_id: str
+    ips_version_id: str
+    snapshot_id: str
+    evaluated_at: datetime
+    compliant: bool
+    breaches: list[ComplianceBreach] = Field(default_factory=list)

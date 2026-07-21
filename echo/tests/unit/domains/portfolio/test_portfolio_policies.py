@@ -2,7 +2,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from domains.portfolio.errors import SchwabOAuthStateInvalidError, SchwabRedirectValueInvalidError
+from domains.portfolio.errors import (
+    IPSValidationError,
+    SchwabOAuthStateInvalidError,
+    SchwabRedirectValueInvalidError,
+)
 from domains.portfolio.models import AssetType
 from domains.portfolio.policies import (
     build_snapshot,
@@ -12,6 +16,7 @@ from domains.portfolio.policies import (
     compute_gain_loss,
     compute_position_weights,
     compute_sector_exposure,
+    evaluate_compliance,
     extract_code_from_redirect,
     generate_oauth_state,
     is_refresh_token_expired,
@@ -24,9 +29,18 @@ from domains.portfolio.policies import (
     parse_price_history,
     parse_quote,
     reconcile,
+    validate_ips_rules,
     verify_oauth_state,
 )
-from domains.portfolio.schemas import AccountBalance, Position, SchwabCredential
+from domains.portfolio.schemas import (
+    AccountBalance,
+    AllocationRange,
+    ConcentrationRule,
+    IPSVersion,
+    Position,
+    RestrictedSecurity,
+    SchwabCredential,
+)
 
 
 def _credential(**overrides: object) -> SchwabCredential:
@@ -426,3 +440,188 @@ def test_is_snapshot_stale_flags_data_older_than_24_hours() -> None:
     taken_at = datetime(2026, 1, 1, tzinfo=UTC)
     assert not is_snapshot_stale(taken_at, taken_at + timedelta(hours=1))
     assert is_snapshot_stale(taken_at, taken_at + timedelta(hours=25))
+
+
+def test_validate_ips_rules_rejects_min_greater_than_max() -> None:
+    with pytest.raises(IPSValidationError):
+        validate_ips_rules(
+            [AllocationRange(asset_type=AssetType.EQUITY, min_percent=80.0, max_percent=50.0)], []
+        )
+
+
+def test_validate_ips_rules_rejects_duplicate_asset_type() -> None:
+    with pytest.raises(IPSValidationError):
+        validate_ips_rules(
+            [
+                AllocationRange(asset_type=AssetType.EQUITY, min_percent=0.0, max_percent=50.0),
+                AllocationRange(asset_type=AssetType.EQUITY, min_percent=0.0, max_percent=80.0),
+            ],
+            [],
+        )
+
+
+def test_validate_ips_rules_rejects_duplicate_restricted_symbol() -> None:
+    with pytest.raises(IPSValidationError):
+        validate_ips_rules(
+            [], [RestrictedSecurity(symbol="TSLA"), RestrictedSecurity(symbol="tsla")]
+        )
+
+
+def test_validate_ips_rules_accepts_well_formed_rules() -> None:
+    validate_ips_rules(
+        [AllocationRange(asset_type=AssetType.EQUITY, min_percent=40.0, max_percent=80.0)],
+        [RestrictedSecurity(symbol="XYZ")],
+    )  # no raise
+
+
+def _ips(**overrides: object) -> IPSVersion:
+    defaults: dict[str, object] = {
+        "ips_id": "ips_1",
+        "version_number": 1,
+        "user_id": "user_1",
+        "account_ids": [],
+        "allocation_ranges": [],
+        "concentration_rule": ConcentrationRule(max_position_percent=25.0),
+        "restricted_securities": [],
+        "created_at": datetime(2026, 1, 1, tzinfo=UTC),
+        "is_active": True,
+    }
+    defaults.update(overrides)
+    return IPSVersion(**defaults)  # type: ignore[arg-type]
+
+
+def test_evaluate_compliance_flags_allocation_range_breach() -> None:
+    ips = _ips(
+        allocation_ranges=[
+            AllocationRange(asset_type=AssetType.EQUITY, min_percent=0.0, max_percent=50.0)
+        ]
+    )
+    positions = [
+        Position(
+            account_id="a1",
+            user_id="u1",
+            symbol="AAPL",
+            asset_type=AssetType.EQUITY,
+            quantity=100,
+            market_value=8000.0,
+            source_record_id="s",
+            synced_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+    ]
+    balances = [
+        AccountBalance(
+            account_id="a1",
+            user_id="u1",
+            cash_balance=2000.0,
+            schwab_reported_total=10000.0,
+            source_record_id="s",
+            synced_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+    ]
+    breaches = evaluate_compliance(ips, positions, balances)
+    assert any(b.rule_type == "allocation_range" for b in breaches)
+
+
+def test_evaluate_compliance_flags_concentration_breach() -> None:
+    ips = _ips(concentration_rule=ConcentrationRule(max_position_percent=10.0))
+    positions = [
+        Position(
+            account_id="a1",
+            user_id="u1",
+            symbol="AAPL",
+            asset_type=AssetType.EQUITY,
+            quantity=100,
+            market_value=9000.0,
+            source_record_id="s",
+            synced_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+    ]
+    balances = [
+        AccountBalance(
+            account_id="a1",
+            user_id="u1",
+            cash_balance=1000.0,
+            schwab_reported_total=10000.0,
+            source_record_id="s",
+            synced_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+    ]
+    breaches = evaluate_compliance(ips, positions, balances)
+    concentration_breaches = [b for b in breaches if b.rule_type == "concentration"]
+    assert len(concentration_breaches) == 1
+    assert concentration_breaches[0].detail["symbol"] == "AAPL"
+
+
+def test_evaluate_compliance_flags_restricted_security() -> None:
+    ips = _ips(restricted_securities=[RestrictedSecurity(symbol="TSLA")])
+    positions = [
+        Position(
+            account_id="a1",
+            user_id="u1",
+            symbol="TSLA",
+            asset_type=AssetType.EQUITY,
+            quantity=10,
+            market_value=2500.0,
+            source_record_id="s",
+            synced_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+    ]
+    breaches = evaluate_compliance(ips, positions, [])
+    assert any(
+        b.rule_type == "restricted_security" and b.detail["symbol"] == "TSLA" for b in breaches
+    )
+
+
+def test_evaluate_compliance_no_breaches_when_within_all_rules() -> None:
+    ips = _ips(
+        allocation_ranges=[
+            AllocationRange(asset_type=AssetType.EQUITY, min_percent=0.0, max_percent=100.0)
+        ],
+        concentration_rule=ConcentrationRule(max_position_percent=100.0),
+    )
+    positions = [
+        Position(
+            account_id="a1",
+            user_id="u1",
+            symbol="AAPL",
+            asset_type=AssetType.EQUITY,
+            quantity=10,
+            market_value=1000.0,
+            source_record_id="s",
+            synced_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+    ]
+    assert evaluate_compliance(ips, positions, []) == []
+
+
+def test_evaluate_compliance_scopes_to_ips_account_ids() -> None:
+    """PROMPT.md Phase 14 implement item 4 ("account assignment"): a
+    position in an account the IPS doesn't apply to must never be
+    evaluated against it."""
+    ips = _ips(
+        account_ids=["account_scoped"],
+        concentration_rule=ConcentrationRule(max_position_percent=10.0),
+    )
+    positions = [
+        Position(
+            account_id="account_other",
+            user_id="u1",
+            symbol="AAPL",
+            asset_type=AssetType.EQUITY,
+            quantity=100,
+            market_value=9000.0,
+            source_record_id="s",
+            synced_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+    ]
+    balances = [
+        AccountBalance(
+            account_id="account_other",
+            user_id="u1",
+            cash_balance=1000.0,
+            schwab_reported_total=10000.0,
+            source_record_id="s",
+            synced_at=datetime(2026, 1, 1, tzinfo=UTC),
+        )
+    ]
+    assert evaluate_compliance(ips, positions, balances) == []

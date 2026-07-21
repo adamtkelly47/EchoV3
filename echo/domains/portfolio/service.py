@@ -25,6 +25,7 @@ from core.identifiers import new_id
 from core.provenance import ComputedValueRecord, SourceRecord, ValidationStatus
 from core.time import Clock
 from domains.portfolio.errors import (
+    NoActiveIPSError,
     PortfolioSnapshotNotFoundError,
     SchwabCredentialNotFoundError,
     SchwabReauthorizationRequiredError,
@@ -38,6 +39,7 @@ from domains.portfolio.policies import (
     compute_gain_loss,
     compute_position_weights,
     compute_sector_exposure,
+    evaluate_compliance,
     extract_code_from_redirect,
     generate_oauth_state,
     is_refresh_token_expired,
@@ -49,15 +51,26 @@ from domains.portfolio.policies import (
     parse_price_history,
     parse_quote,
     reconcile,
+    validate_ips_rules,
     verify_oauth_state,
 )
-from domains.portfolio.repository import PortfolioRepository, SchwabCredentialRepository
+from domains.portfolio.repository import (
+    ComplianceResultRepository,
+    IPSRepository,
+    PortfolioRepository,
+    SchwabCredentialRepository,
+)
 from domains.portfolio.schemas import (
     Account,
+    AllocationRange,
+    ComplianceResult,
+    ConcentrationRule,
+    IPSVersion,
     MoneyDashboard,
     PortfolioSnapshot,
     PriceHistoryPoint,
     Quote,
+    RestrictedSecurity,
     SchwabCredential,
 )
 from infrastructure.database.repositories.audit import AuditRepository
@@ -90,6 +103,8 @@ class PortfolioService:
         clock: Clock,
         state_secret: str,
         computed_values: ComputedValueRecordRepository,
+        ips: IPSRepository,
+        compliance_results: ComplianceResultRepository,
     ) -> None:
         self._credentials = credentials
         self._portfolio = portfolio
@@ -100,6 +115,8 @@ class PortfolioService:
         self._clock = clock
         self._state_secret = state_secret
         self._computed_values = computed_values
+        self._ips = ips
+        self._compliance_results = compliance_results
 
     def start_authorization(self, user_id: str) -> str:
         state = generate_oauth_state(user_id, new_id(), self._clock.now_utc(), self._state_secret)
@@ -222,11 +239,23 @@ class PortfolioService:
         positions = await self._portfolio.list_all_positions(user_id)
         now = self._clock.now_utc()
 
+        # An active IPS's own concentration rule (PROMPT.md Phase 14)
+        # supersedes Phase 13's generic default the moment one exists — the
+        # promise made in that phase's own code comment.
+        active_ips = await self._ips.get_active(user_id)
+        concentration_threshold = (
+            active_ips.concentration_rule.max_position_percent if active_ips is not None else None
+        )
+
         weights = compute_position_weights(positions, snapshot.total_market_value)
         asset_class_exposure = compute_asset_class_exposure(positions, snapshot.total_market_value)
         sector_exposure = compute_sector_exposure(snapshot.total_market_value)
         cross_account_exposure = compute_cross_account_exposure(positions)
-        concentration_warnings = compute_concentration_warnings(weights)
+        concentration_warnings = (
+            compute_concentration_warnings(weights, threshold_percent=concentration_threshold)
+            if concentration_threshold is not None
+            else compute_concentration_warnings(weights)
+        )
         gain_loss, total_gain_loss = compute_gain_loss(positions)
 
         warnings = list(snapshot.warnings)
@@ -299,6 +328,105 @@ class PortfolioService:
         access_token = await self._get_valid_access_token(user_id)
         raw = await self._provider.get_price_history(access_token, symbol)
         return parse_price_history(raw)
+
+    async def create_ips_version(
+        self,
+        user_id: str,
+        ips_id: str | None,
+        account_ids: list[str],
+        allocation_ranges: list[AllocationRange],
+        concentration_rule: ConcentrationRule,
+        restricted_securities: list[RestrictedSecurity],
+    ) -> IPSVersion:
+        """PROMPT.md Phase 14 implement items 1-3 ("IPS schema", "IPS
+        editor", "versioning"). `ips_id=None` starts a brand-new document;
+        passing an existing `ips_id` supersedes its current active version
+        with a new one — the prior version's own rules are never rewritten
+        (verification 3), only which version is active changes."""
+        validate_ips_rules(allocation_ranges, restricted_securities)
+        now = self._clock.now_utc()
+        if ips_id is None:
+            ips_id = new_id("ips")
+            version_number = 1
+        else:
+            existing_versions = await self._ips.list_versions(user_id)
+            matching = [v for v in existing_versions if v.ips_id == ips_id]
+            version_number = (max((v.version_number for v in matching), default=0)) + 1
+        version = IPSVersion(
+            ips_id=ips_id,
+            version_number=version_number,
+            user_id=user_id,
+            account_ids=account_ids,
+            allocation_ranges=allocation_ranges,
+            concentration_rule=concentration_rule,
+            restricted_securities=restricted_securities,
+            created_at=now,
+            is_active=True,
+        )
+        await self._ips.save_version(version)
+        await self._audit.record(
+            action="portfolio.ips_version_created",
+            result="success",
+            detail={"user_id": user_id, "ips_id": ips_id, "version_number": version_number},
+        )
+        return version
+
+    async def get_active_ips(self, user_id: str) -> IPSVersion | None:
+        return await self._ips.get_active(user_id)
+
+    async def list_ips_versions(self, user_id: str) -> list[IPSVersion]:
+        return await self._ips.list_versions(user_id)
+
+    async def evaluate_ips_compliance(self, user_id: str) -> ComplianceResult:
+        """PROMPT.md Phase 14 implement items 8-9 ("rule evaluation",
+        "compliance results"). Deterministic (verification 1) and always
+        cites exactly which IPS version and portfolio snapshot it was
+        evaluated against (verification 2) — never a live Schwab call, only
+        the latest already-synced data, matching Phase 13's dashboard."""
+        active_ips = await self._ips.get_active(user_id)
+        if active_ips is None:
+            raise NoActiveIPSError(
+                f"no active IPS for user {user_id!r} — create one before evaluating compliance"
+            )
+        snapshot = await self._portfolio.get_latest_snapshot(user_id)
+        if snapshot is None:
+            raise PortfolioSnapshotNotFoundError(
+                f"no synced portfolio snapshot for user {user_id!r} "
+                "— run POST /portfolio/sync first"
+            )
+        positions = await self._portfolio.list_all_positions(user_id)
+        balances = await self._portfolio.list_latest_balances(user_id)
+        breaches = evaluate_compliance(active_ips, positions, balances)
+
+        result = ComplianceResult(
+            user_id=user_id,
+            ips_version_id=active_ips.version_id,
+            snapshot_id=snapshot.snapshot_id,
+            evaluated_at=self._clock.now_utc(),
+            compliant=not breaches,
+            breaches=breaches,
+        )
+        await self._compliance_results.save(result)
+        await self._audit.record(
+            action="portfolio.ips_compliance_evaluated",
+            result="success",
+            detail={
+                "user_id": user_id,
+                "ips_version_id": active_ips.version_id,
+                "snapshot_id": snapshot.snapshot_id,
+                "compliant": result.compliant,
+                "breach_count": len(breaches),
+            },
+        )
+        return result
+
+    async def get_latest_compliance_result(self, user_id: str) -> ComplianceResult | None:
+        """PROMPT.md Phase 14 implement item 10 ("drift dashboard"): the
+        latest already-evaluated compliance result — like the money
+        dashboard, this reads, it never re-evaluates on the caller's behalf
+        (call `evaluate_ips_compliance` explicitly for that, mirroring
+        `sync`/`get_dashboard`'s own read/write split)."""
+        return await self._compliance_results.get_latest(user_id)
 
     async def _store_raw_response(
         self, raw: dict[str, Any], *, provider: str, now: datetime

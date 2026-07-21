@@ -39,6 +39,8 @@ from domains.conversation.service import ConversationService
 from domains.memory.repository import PostgresMemoryRepository
 from domains.memory.service import MemoryService
 from domains.portfolio.repository import (
+    PostgresComplianceResultRepository,
+    PostgresIPSRepository,
     PostgresPortfolioRepository,
     PostgresSchwabCredentialRepository,
 )
@@ -179,4 +181,6 @@ def get_portfolio_service(
         SystemClock(),
         get_oauth_state_secret(),
         PostgresComputedValueRecordRepository(session),
+        PostgresIPSRepository(session),
+        PostgresComplianceResultRepository(session),
     )

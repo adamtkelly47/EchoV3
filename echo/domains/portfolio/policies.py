@@ -27,19 +27,27 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from domains.portfolio.errors import SchwabOAuthStateInvalidError, SchwabRedirectValueInvalidError
+from domains.portfolio.errors import (
+    IPSValidationError,
+    SchwabOAuthStateInvalidError,
+    SchwabRedirectValueInvalidError,
+)
 from domains.portfolio.models import AssetType
 from domains.portfolio.schemas import (
     Account,
     AccountBalance,
+    AllocationRange,
     AssetClassExposure,
+    ComplianceBreach,
     ConcentrationWarning,
+    IPSVersion,
     PortfolioSnapshot,
     Position,
     PositionGainLoss,
     PositionWeight,
     PriceHistoryPoint,
     Quote,
+    RestrictedSecurity,
     SchwabCredential,
     SectorExposure,
     SymbolExposure,
@@ -479,3 +487,113 @@ def extract_code_from_redirect(pasted_value: str) -> str:
             "no 'code' parameter found in the pasted redirect URL"
         )
     return codes[0]
+
+
+def validate_ips_rules(
+    allocation_ranges: list[AllocationRange],
+    restricted_securities: list[RestrictedSecurity],
+) -> None:
+    """PROMPT.md Phase 14 implement item 2 ("IPS editor"): the write-time
+    validation an editor needs. `ConcentrationRule.max_position_percent`'s
+    own `gt=0, le=100` constraint (schemas.py) already rules out a malformed
+    concentration rule at the type level, so there's nothing further to
+    check for it here."""
+    for rule in allocation_ranges:
+        if rule.min_percent > rule.max_percent:
+            raise IPSValidationError(
+                f"{rule.asset_type.value} allocation range has min_percent "
+                f"({rule.min_percent}) greater than max_percent ({rule.max_percent})"
+            )
+    seen_types = [r.asset_type for r in allocation_ranges]
+    if len(seen_types) != len(set(seen_types)):
+        raise IPSValidationError(
+            "allocation_ranges has more than one range for the same asset type"
+        )
+
+    symbols = [r.symbol.strip().upper() for r in restricted_securities]
+    if any(not s for s in symbols):
+        raise IPSValidationError("restricted_securities contains an empty symbol")
+    if len(symbols) != len(set(symbols)):
+        raise IPSValidationError("restricted_securities lists the same symbol more than once")
+
+
+def evaluate_compliance(
+    ips: IPSVersion, positions: list[Position], balances: list[AccountBalance]
+) -> list[ComplianceBreach]:
+    """PROMPT.md Phase 14 implement items 6-8: allocation ranges,
+    concentration rules, and restricted securities, evaluated deterministically
+    against the given positions/balances (verification 1) — no I/O, no
+    randomness, no model call. Scoped to `ips.account_ids` when non-empty,
+    matching PROMPT.md Phase 14 implement item 4 ("account assignment");
+    otherwise evaluated across every account, mirroring
+    `domains.portfolio.policies.build_snapshot`'s own total calculation so
+    the two stay consistent with each other."""
+    account_ids = set(ips.account_ids) if ips.account_ids else None
+    scoped_positions = [p for p in positions if account_ids is None or p.account_id in account_ids]
+    scoped_balances = [b for b in balances if account_ids is None or b.account_id in account_ids]
+    scoped_total = sum(b.cash_balance or 0.0 for b in scoped_balances) + sum(
+        p.market_value or 0.0 for p in scoped_positions
+    )
+
+    breaches: list[ComplianceBreach] = []
+
+    totals_by_type: dict[AssetType, float] = {}
+    for p in scoped_positions:
+        if p.market_value is None:
+            continue
+        totals_by_type[p.asset_type] = totals_by_type.get(p.asset_type, 0.0) + p.market_value
+    for rule in ips.allocation_ranges:
+        actual_value = totals_by_type.get(rule.asset_type, 0.0)
+        actual_percent = (
+            round(actual_value / scoped_total * 100, _PERCENT_DECIMALS) if scoped_total else 0.0
+        )
+        if actual_percent < rule.min_percent or actual_percent > rule.max_percent:
+            breaches.append(
+                ComplianceBreach(
+                    rule_type="allocation_range",
+                    description=(
+                        f"{rule.asset_type.value} allocation is {actual_percent}%, "
+                        f"outside the IPS range [{rule.min_percent}%, {rule.max_percent}%]"
+                    ),
+                    detail={
+                        "asset_type": rule.asset_type.value,
+                        "actual_percent": actual_percent,
+                        "min_percent": rule.min_percent,
+                        "max_percent": rule.max_percent,
+                    },
+                )
+            )
+
+    for p in scoped_positions:
+        if p.market_value is None or not scoped_total:
+            continue
+        weight_percent = round(p.market_value / scoped_total * 100, _PERCENT_DECIMALS)
+        if weight_percent > ips.concentration_rule.max_position_percent:
+            breaches.append(
+                ComplianceBreach(
+                    rule_type="concentration",
+                    description=(
+                        f"{p.symbol} is {weight_percent}% of tracked value, exceeding the "
+                        f"IPS limit of {ips.concentration_rule.max_position_percent}%"
+                    ),
+                    detail={
+                        "symbol": p.symbol,
+                        "account_id": p.account_id,
+                        "weight_percent": weight_percent,
+                        "limit_percent": ips.concentration_rule.max_position_percent,
+                    },
+                )
+            )
+
+    restricted_symbols = {r.symbol for r in ips.restricted_securities}
+    for p in scoped_positions:
+        if p.symbol in restricted_symbols:
+            breaches.append(
+                ComplianceBreach(
+                    rule_type="restricted_security",
+                    description=f"{p.symbol} is held but restricted by the IPS",
+                    detail={"symbol": p.symbol, "account_id": p.account_id},
+                )
+            )
+
+    return breaches

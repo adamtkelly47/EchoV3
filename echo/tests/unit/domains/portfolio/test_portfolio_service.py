@@ -5,16 +5,22 @@ import pytest
 from core.errors import ProviderUnavailableError
 from core.time import FakeClock
 from domains.portfolio.errors import (
+    IPSValidationError,
+    NoActiveIPSError,
     PortfolioSnapshotNotFoundError,
     SchwabCredentialNotFoundError,
     SchwabReauthorizationRequiredError,
     SchwabTokenRefreshError,
 )
+from domains.portfolio.models import AssetType
+from domains.portfolio.schemas import AllocationRange, ConcentrationRule, RestrictedSecurity
 from domains.portfolio.service import PortfolioService
 from infrastructure.secrets.encryption import SecretCipher
 from tests.unit.domains.portfolio.fakes import (
     FakeAuditRepository,
+    FakeComplianceResultRepository,
     FakeComputedValueRecordRepository,
+    FakeIPSRepository,
     FakePortfolioRepository,
     FakeSchwabCredentialRepository,
     FakeSchwabProvider,
@@ -27,12 +33,17 @@ _FERNET_KEY = "qgiLfl_Ze3gvcItoR_vV0K0D0IWKj2I8gA_U9Rq95EY="
 def _service(
     clock: FakeClock | None = None, provider: FakeSchwabProvider | None = None
 ) -> tuple[
-    PortfolioService, FakeSchwabProvider, FakePortfolioRepository, FakeSchwabCredentialRepository
+    PortfolioService,
+    FakeSchwabProvider,
+    FakePortfolioRepository,
+    FakeSchwabCredentialRepository,
+    FakeIPSRepository,
 ]:
     clock = clock or FakeClock(datetime(2026, 1, 1, tzinfo=UTC))
     provider = provider or FakeSchwabProvider()
     portfolio_repo = FakePortfolioRepository()
     credentials = FakeSchwabCredentialRepository()
+    ips_repo = FakeIPSRepository()
     service = PortfolioService(
         credentials,
         portfolio_repo,
@@ -43,8 +54,10 @@ def _service(
         clock,
         "state-secret",
         FakeComputedValueRecordRepository(),
+        ips_repo,
+        FakeComplianceResultRepository(),
     )
-    return service, provider, portfolio_repo, credentials
+    return service, provider, portfolio_repo, credentials, ips_repo
 
 
 async def _connect(service: PortfolioService, user_id: str = "user_1") -> None:
@@ -54,7 +67,7 @@ async def _connect(service: PortfolioService, user_id: str = "user_1") -> None:
 
 
 async def test_connect_stores_encrypted_tokens_and_refresh_expiry() -> None:
-    service, _, _, credentials = _service()
+    service, _, _, credentials, _ = _service()
     await _connect(service)
 
     stored = await credentials.get_for_user("user_1")
@@ -64,7 +77,7 @@ async def test_connect_stores_encrypted_tokens_and_refresh_expiry() -> None:
 
 
 async def test_sync_masks_account_number_and_reconciles() -> None:
-    service, provider, portfolio_repo, _ = _service()
+    service, provider, portfolio_repo, _, _ = _service()
     await _connect(service)
     provider.account_numbers_response = [{"accountNumber": "87654321", "hashValue": "hash-abc"}]
     provider.accounts_response = [
@@ -100,7 +113,7 @@ async def test_repeated_sync_reuses_the_same_account_and_position_rows() -> None
     entry): re-syncing must update the *same* account/position rows, not
     silently create a fresh, never-reused account_id (and therefore
     orphaned positions) on every call."""
-    service, provider, portfolio_repo, _ = _service()
+    service, provider, portfolio_repo, _, _ = _service()
     await _connect(service)
     provider.account_numbers_response = [{"accountNumber": "87654321", "hashValue": "hash-abc"}]
     provider.accounts_response = [
@@ -134,7 +147,7 @@ async def test_repeated_sync_reuses_the_same_account_and_position_rows() -> None
 
 
 async def test_sync_reconciliation_mismatch_produces_warning() -> None:
-    service, provider, _, _ = _service()
+    service, provider, _, _, _ = _service()
     await _connect(service)
     provider.account_numbers_response = [{"accountNumber": "11111111", "hashValue": "hash-1"}]
     provider.accounts_response = [
@@ -155,7 +168,7 @@ async def test_sync_reconciliation_mismatch_produces_warning() -> None:
 
 
 async def test_sync_stores_raw_response_for_provenance() -> None:
-    service, provider, portfolio_repo, _ = _service()
+    service, provider, portfolio_repo, _, _ = _service()
     await _connect(service)
     provider.account_numbers_response = [{"accountNumber": "11111111", "hashValue": "hash-1"}]
     provider.accounts_response = [
@@ -175,7 +188,7 @@ async def test_sync_stores_raw_response_for_provenance() -> None:
 
 
 async def test_get_quotes_returns_parsed_quote() -> None:
-    service, provider, _, _ = _service()
+    service, provider, _, _, _ = _service()
     await _connect(service)
     provider.quotes_response = {"AAPL": {"quote": {"lastPrice": 185.5, "netChange": 1.5}}}
 
@@ -186,7 +199,7 @@ async def test_get_quotes_returns_parsed_quote() -> None:
 
 async def test_expired_access_token_triggers_refresh() -> None:
     clock = FakeClock(datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC))
-    service, provider, _, credentials = _service(clock=clock)
+    service, provider, _, credentials, _ = _service(clock=clock)
     await _connect(service)
 
     clock.set(datetime(2026, 1, 1, 12, 27, 0, tzinfo=UTC))  # inside the 5-minute refresh buffer
@@ -201,7 +214,7 @@ async def test_refresh_token_expired_raises_reauthorization_required_not_a_refre
     None
 ):
     clock = FakeClock(datetime(2026, 1, 1, tzinfo=UTC))
-    service, provider, _, _ = _service(clock=clock)
+    service, provider, _, _, _ = _service(clock=clock)
     await _connect(service)
 
     clock.set(datetime(2026, 1, 9, tzinfo=UTC))  # past the 7-day refresh token expiry
@@ -213,7 +226,7 @@ async def test_refresh_token_expired_raises_reauthorization_required_not_a_refre
 
 async def test_token_refresh_provider_failure_surfaces_as_schwab_error() -> None:
     clock = FakeClock(datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC))
-    service, provider, _, _ = _service(clock=clock)
+    service, provider, _, _, _ = _service(clock=clock)
     await _connect(service)
     provider.raise_on_refresh = ProviderUnavailableError("Schwab rejected the refresh token")
 
@@ -223,20 +236,20 @@ async def test_token_refresh_provider_failure_surfaces_as_schwab_error() -> None
 
 
 async def test_sync_without_credential_raises_not_found() -> None:
-    service, _, _, _ = _service()
+    service, _, _, _, _ = _service()
     with pytest.raises(SchwabCredentialNotFoundError):
         await service.sync("never_connected")
 
 
 async def test_get_dashboard_without_a_sync_raises_snapshot_not_found() -> None:
-    service, _, _, _ = _service()
+    service, _, _, _, _ = _service()
     await _connect(service)
     with pytest.raises(PortfolioSnapshotNotFoundError):
         await service.get_dashboard("user_1")
 
 
 async def test_get_dashboard_computes_weights_gain_loss_and_provenance() -> None:
-    service, provider, _, _ = _service()
+    service, provider, _, _, _ = _service()
     await _connect(service)
     provider.account_numbers_response = [{"accountNumber": "87654321", "hashValue": "hash-abc"}]
     provider.accounts_response = [
@@ -273,7 +286,7 @@ async def test_get_dashboard_computes_weights_gain_loss_and_provenance() -> None
 
 async def test_get_dashboard_flags_stale_data() -> None:
     clock = FakeClock(datetime(2026, 1, 1, tzinfo=UTC))
-    service, provider, _, _ = _service(clock=clock)
+    service, provider, _, _, _ = _service(clock=clock)
     await _connect(service)
     provider.account_numbers_response = [{"accountNumber": "11111111", "hashValue": "hash-1"}]
     provider.accounts_response = [
@@ -292,3 +305,192 @@ async def test_get_dashboard_flags_stale_data() -> None:
     dashboard = await service.get_dashboard("user_1")
 
     assert dashboard.is_stale is True
+
+
+async def test_get_dashboard_uses_active_ips_concentration_threshold() -> None:
+    """PROMPT.md Phase 13's own comment promised this: once an IPS exists,
+    its concentration_rule supersedes Phase 13's generic 10% default."""
+    service, provider, _, _, _ = _service()
+    await _connect(service)
+    provider.account_numbers_response = [{"accountNumber": "11111111", "hashValue": "hash-1"}]
+    provider.accounts_response = [
+        {
+            "securitiesAccount": {
+                "type": "INDIVIDUAL",
+                "accountNumber": "11111111",
+                "currentBalances": {"cashBalance": 0.0, "liquidationValue": 10000.0},
+                "positions": [
+                    {
+                        "instrument": {"symbol": "AAPL", "assetType": "EQUITY"},
+                        "longQuantity": 100,
+                        "shortQuantity": 0,
+                        "marketValue": 10000.0,
+                    }
+                ],
+            }
+        }
+    ]
+    await service.sync("user_1")
+
+    # 100% concentration wouldn't breach a 10% default threshold... it would
+    # (100 > 10), so instead prove the *IPS's own* threshold is what's used:
+    # set an IPS limit of 50%, still breached at 100%, confirming the IPS
+    # value (not the 10% default) is what's actually being compared.
+    await service.create_ips_version(
+        "user_1",
+        None,
+        [],
+        [],
+        ConcentrationRule(max_position_percent=50.0),
+        [],
+    )
+    dashboard = await service.get_dashboard("user_1")
+
+    assert dashboard.concentration_warnings[0].threshold_percent == 50.0
+
+
+async def test_create_ips_version_rejects_invalid_allocation_range() -> None:
+    service, _, _, _, _ = _service()
+    with pytest.raises(IPSValidationError):
+        await service.create_ips_version(
+            "user_1",
+            None,
+            [],
+            [AllocationRange(asset_type=AssetType.EQUITY, min_percent=80.0, max_percent=50.0)],
+            ConcentrationRule(max_position_percent=25.0),
+            [],
+        )
+
+
+async def test_create_ips_version_increments_and_supersedes() -> None:
+    service, _, _, _, ips_repo = _service()
+    first = await service.create_ips_version(
+        "user_1", None, [], [], ConcentrationRule(max_position_percent=25.0), []
+    )
+    second = await service.create_ips_version(
+        "user_1", first.ips_id, [], [], ConcentrationRule(max_position_percent=20.0), []
+    )
+
+    assert second.version_number == 2
+    assert second.is_active is True
+
+    active = await ips_repo.get_active("user_1")
+    assert active is not None
+    assert active.version_id == second.version_id
+
+    versions = await service.list_ips_versions("user_1")
+    assert len(versions) == 2
+    first_stored = next(v for v in versions if v.version_id == first.version_id)
+    assert first_stored.is_active is False
+    # The superseded version's own rules are untouched — only its active
+    # flag changed (PROMPT.md Phase 14 verification 3).
+    assert first_stored.concentration_rule.max_position_percent == 25.0
+
+
+async def test_evaluate_ips_compliance_without_active_ips_raises() -> None:
+    service, provider, _, _, _ = _service()
+    await _connect(service)
+    provider.account_numbers_response = [{"accountNumber": "1", "hashValue": "h1"}]
+    provider.accounts_response = [
+        {
+            "securitiesAccount": {
+                "type": "INDIVIDUAL",
+                "accountNumber": "1",
+                "currentBalances": {"cashBalance": 0.0, "liquidationValue": 0.0},
+                "positions": [],
+            }
+        }
+    ]
+    await service.sync("user_1")
+    with pytest.raises(NoActiveIPSError):
+        await service.evaluate_ips_compliance("user_1")
+
+
+async def test_evaluate_ips_compliance_without_sync_raises_snapshot_not_found() -> None:
+    service, _, _, _, _ = _service()
+    await service.create_ips_version(
+        "user_1", None, [], [], ConcentrationRule(max_position_percent=25.0), []
+    )
+    with pytest.raises(PortfolioSnapshotNotFoundError):
+        await service.evaluate_ips_compliance("user_1")
+
+
+async def test_evaluate_ips_compliance_cites_ips_version_and_snapshot() -> None:
+    service, provider, _, _, _ = _service()
+    await _connect(service)
+    provider.account_numbers_response = [{"accountNumber": "1", "hashValue": "h1"}]
+    provider.accounts_response = [
+        {
+            "securitiesAccount": {
+                "type": "INDIVIDUAL",
+                "accountNumber": "1",
+                "currentBalances": {"cashBalance": 0.0, "liquidationValue": 10000.0},
+                "positions": [
+                    {
+                        "instrument": {"symbol": "TSLA", "assetType": "EQUITY"},
+                        "longQuantity": 10,
+                        "shortQuantity": 0,
+                        "marketValue": 10000.0,
+                    }
+                ],
+            }
+        }
+    ]
+    snapshot = await service.sync("user_1")
+    ips = await service.create_ips_version(
+        "user_1",
+        None,
+        [],
+        [],
+        ConcentrationRule(max_position_percent=25.0),
+        [RestrictedSecurity(symbol="TSLA")],
+    )
+
+    result = await service.evaluate_ips_compliance("user_1")
+
+    assert result.ips_version_id == ips.version_id
+    assert result.snapshot_id == snapshot.snapshot_id
+    assert result.compliant is False
+    breach_types = {b.rule_type for b in result.breaches}
+    assert "concentration" in breach_types
+    assert "restricted_security" in breach_types
+
+    latest = await service.get_latest_compliance_result("user_1")
+    assert latest is not None
+    assert latest.result_id == result.result_id
+
+
+async def test_updating_ips_does_not_rewrite_a_historical_compliance_result() -> None:
+    """PROMPT.md Phase 14 verification 3: updating an IPS does not rewrite
+    historical evaluations — a result already cites a specific
+    ips_version_id, and that citation must stay valid and retrievable even
+    after a newer version becomes active."""
+    service, provider, _, _, ips_repo = _service()
+    await _connect(service)
+    provider.account_numbers_response = [{"accountNumber": "1", "hashValue": "h1"}]
+    provider.accounts_response = [
+        {
+            "securitiesAccount": {
+                "type": "INDIVIDUAL",
+                "accountNumber": "1",
+                "currentBalances": {"cashBalance": 0.0, "liquidationValue": 10000.0},
+                "positions": [],
+            }
+        }
+    ]
+    await service.sync("user_1")
+    first_ips = await service.create_ips_version(
+        "user_1", None, [], [], ConcentrationRule(max_position_percent=25.0), []
+    )
+    first_result = await service.evaluate_ips_compliance("user_1")
+    assert first_result.ips_version_id == first_ips.version_id
+
+    await service.create_ips_version(
+        "user_1", first_ips.ips_id, [], [], ConcentrationRule(max_position_percent=5.0), []
+    )
+
+    # The old result's citation is untouched by the new version existing.
+    unchanged = await ips_repo.get_version(first_ips.version_id)
+    assert unchanged is not None
+    assert unchanged.concentration_rule.max_position_percent == 25.0
+    assert first_result.ips_version_id == first_ips.version_id

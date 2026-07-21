@@ -19,10 +19,16 @@ from apps.api.dependencies import get_db_session, get_portfolio_service
 from apps.api.schemas.portfolio import (
     AccountListResponse,
     AccountResponse,
+    AllocationRangeResponse,
     AssetClassExposureResponse,
     CompleteAuthorizationRequest,
+    ComplianceBreachResponse,
+    ComplianceResultResponse,
     ConcentrationWarningResponse,
     ConnectResponse,
+    CreateIPSVersionRequest,
+    IPSVersionListResponse,
+    IPSVersionResponse,
     MoneyDashboardResponse,
     PositionGainLossResponse,
     PositionWeightResponse,
@@ -30,10 +36,19 @@ from apps.api.schemas.portfolio import (
     PriceHistoryResponse,
     QuoteListResponse,
     QuoteResponse,
+    RestrictedSecurityResponse,
     SectorExposureResponse,
     SnapshotResponse,
     SymbolExposureResponse,
 )
+from domains.portfolio.models import AssetType
+from domains.portfolio.schemas import (
+    AllocationRange,
+    ComplianceResult,
+    ConcentrationRule,
+    IPSVersion,
+)
+from domains.portfolio.schemas import RestrictedSecurity as DomainRestrictedSecurity
 from domains.portfolio.service import PortfolioService
 
 router = APIRouter(prefix="/portfolio", tags=["portfolio"])
@@ -203,6 +218,110 @@ async def quotes(
             for q in result
         ]
     )
+
+
+def _to_ips_response(version: IPSVersion) -> IPSVersionResponse:
+    return IPSVersionResponse(
+        version_id=version.version_id,
+        ips_id=version.ips_id,
+        version_number=version.version_number,
+        user_id=version.user_id,
+        account_ids=version.account_ids,
+        allocation_ranges=[
+            AllocationRangeResponse(
+                asset_type=r.asset_type.value, min_percent=r.min_percent, max_percent=r.max_percent
+            )
+            for r in version.allocation_ranges
+        ],
+        max_position_percent=version.concentration_rule.max_position_percent,
+        restricted_securities=[
+            RestrictedSecurityResponse(symbol=r.symbol, reason=r.reason)
+            for r in version.restricted_securities
+        ],
+        created_at=version.created_at,
+        is_active=version.is_active,
+    )
+
+
+def _to_compliance_response(result: ComplianceResult) -> ComplianceResultResponse:
+    return ComplianceResultResponse(
+        result_id=result.result_id,
+        user_id=result.user_id,
+        ips_version_id=result.ips_version_id,
+        snapshot_id=result.snapshot_id,
+        evaluated_at=result.evaluated_at,
+        compliant=result.compliant,
+        breaches=[
+            ComplianceBreachResponse(
+                rule_type=b.rule_type, description=b.description, detail=b.detail
+            )
+            for b in result.breaches
+        ],
+    )
+
+
+@router.post("/ips", response_model=IPSVersionResponse)
+async def create_ips_version(
+    user_id: str,
+    body: CreateIPSVersionRequest,
+    portfolio: PortfolioService = Depends(get_portfolio_service),
+    session: AsyncSession = Depends(get_db_session),
+) -> IPSVersionResponse:
+    version = await portfolio.create_ips_version(
+        user_id,
+        body.ips_id,
+        body.account_ids,
+        [
+            AllocationRange(
+                asset_type=AssetType(r.asset_type),
+                min_percent=r.min_percent,
+                max_percent=r.max_percent,
+            )
+            for r in body.allocation_ranges
+        ],
+        ConcentrationRule(max_position_percent=body.max_position_percent),
+        [
+            DomainRestrictedSecurity(symbol=r.symbol, reason=r.reason)
+            for r in body.restricted_securities
+        ],
+    )
+    await session.commit()
+    return _to_ips_response(version)
+
+
+@router.get("/ips/active", response_model=IPSVersionResponse | None)
+async def active_ips(
+    user_id: str, portfolio: PortfolioService = Depends(get_portfolio_service)
+) -> IPSVersionResponse | None:
+    version = await portfolio.get_active_ips(user_id)
+    return _to_ips_response(version) if version is not None else None
+
+
+@router.get("/ips/versions", response_model=IPSVersionListResponse)
+async def ips_versions(
+    user_id: str, portfolio: PortfolioService = Depends(get_portfolio_service)
+) -> IPSVersionListResponse:
+    versions = await portfolio.list_ips_versions(user_id)
+    return IPSVersionListResponse(versions=[_to_ips_response(v) for v in versions])
+
+
+@router.post("/ips/compliance/evaluate", response_model=ComplianceResultResponse)
+async def evaluate_compliance(
+    user_id: str,
+    portfolio: PortfolioService = Depends(get_portfolio_service),
+    session: AsyncSession = Depends(get_db_session),
+) -> ComplianceResultResponse:
+    result = await portfolio.evaluate_ips_compliance(user_id)
+    await session.commit()
+    return _to_compliance_response(result)
+
+
+@router.get("/ips/compliance/latest", response_model=ComplianceResultResponse | None)
+async def latest_compliance_result(
+    user_id: str, portfolio: PortfolioService = Depends(get_portfolio_service)
+) -> ComplianceResultResponse | None:
+    result = await portfolio.get_latest_compliance_result(user_id)
+    return _to_compliance_response(result) if result is not None else None
 
 
 @router.get("/price-history/{symbol}", response_model=PriceHistoryResponse)
