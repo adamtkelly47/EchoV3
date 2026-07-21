@@ -26,6 +26,11 @@ npm-debug.log*
 # Docker
 *.pid
 
+# Phase 15 provider evaluation harness — the container only mounts echo/, not
+# the repo root, so the harness writes here first; the real destination
+# (Docs/decisions/) is a manual `docker compose cp` out, not this directory.
+echo/scripts/provider_evaluation/output/
+
 # OS
 .DS_Store
 Thumbs.db

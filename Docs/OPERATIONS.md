@@ -25,6 +25,8 @@ This builds and starts five services: `frontend` (localhost:3000), `backend` (lo
 
 Restarting containers (`docker compose restart` or `down` + `up`) does not erase Neon data (Neon is external to the Compose stack) and does not erase Ollama's pulled models (stored in the `ollama_data` named volume).
 
+`docker compose restart <service>` restarts the running process but does **not** re-read `env_file` (`.env`) — a variable added to `.env` after the container was created stays invisible until the container is recreated with `docker compose up -d <service>` (or `up --build` for a code change). Confirmed the hard way in Phase 15's Decision Log entry: `restart` alone left two newly-added API keys unset even though `.env` had them, and `up -d` was required to pick them up. Recreating also wipes anything installed or copied into the container outside the image build (dev tools from `pip install ".[dev]"`, any file placed via `docker compose cp`) — both need redoing after a recreate, not just a restart.
+
 ## Verifying the Environment
 
 ```bash

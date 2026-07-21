@@ -50,6 +50,19 @@ class Settings(BaseSettings):
     schwab_client_secret: str | None = None
     schwab_redirect_uri: str = "https://127.0.0.1:8182"
 
+    # Phase 15 provider evaluation harness (scripts/provider_evaluation/)
+    # only — candidate research-data providers being live-tested, not a
+    # selected/adopted provider (PROMPT.md Phase 15: "Do not select a
+    # permanent provider before this phase"). No application/domain code
+    # depends on these; that only happens once Phase 16+ actually adopts one.
+    finnhub_api_key: str | None = None
+    fmp_api_key: str | None = None
+    # SEC EDGAR's fair-access policy requires a descriptive User-Agent with a
+    # real, reachable contact address (an anonymous one gets throttled or
+    # rejected) — read from Settings like every other credential, never
+    # hardcoded in source.
+    research_contact_email: str | None = None
+
 
 @lru_cache
 def get_settings() -> Settings:

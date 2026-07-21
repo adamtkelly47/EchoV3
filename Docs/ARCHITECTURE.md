@@ -127,7 +127,11 @@ echo/
         end_to_end/
         fixtures/
         architecture/
-    scripts/
+    scripts/            # check_architecture.py, check_size_limits.py; Phase 15 added
+                         # provider_evaluation/ — a live-testing harness for candidate
+                         # research-data providers, deliberately not domains/ or providers/
+                         # (PROMPT.md Phase 15: "Do not select a permanent provider before
+                         # this phase") — nothing in apps/domains/application imports it
     migrations/         # populated Phase 4: Alembic env.py + versions/
 ```
 
