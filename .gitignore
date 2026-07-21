@@ -1,0 +1,40 @@
+# Secrets — never committed (see Docs/SECURITY.md)
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+next-env.d.ts
+npm-debug.log*
+*.tsbuildinfo
+
+# Docker
+*.pid
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+
+# Claude Code local tool state (settings, auto-installed skills) —
+# not Echo project source.
+.claude/
+.agents/

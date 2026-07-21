@@ -1,0 +1,83 @@
+Version: 1.0
+Status: DRAFT
+Owner: Echo Project
+Last Updated: July 2026
+
+# Decision Log
+
+## Purpose
+
+A chronological, accessible index of material product and engineering decisions, so design reasoning does not survive only inside chat history (CONSTITUTION.md: Documentation Philosophy). Entries here that rise to architectural significance get a full ADR in `Docs/decisions/`; smaller or purely clarifying decisions are recorded here only.
+
+---
+
+## 2026-07-20 — Phase 0 initiated; PROMPT.md digested
+
+`PROMPT.md` was populated with the full Echo v3 build specification (32 sections, 29 phases). CONSTITUTION.md (approved) and DOMAIN_OWNERSHIP.md (draft) already existed and were substantially aligned with it. `Docs/REQUEST_LIFESTYLE.md` existed as an empty, misnamed file.
+
+## 2026-07-20 — Contradictions identified in PROMPT.md (Section 32 item 11)
+
+Per the Immediate Assignment's own requirement to identify contradictions and unresolved risks before proceeding:
+
+1. `REQUEST_LIFESTYLE.md` vs. the `REQUEST_LIFECYCLE.md` referenced by CONSTITUTION.md and DOMAIN_OWNERSHIP.md — typo. **Resolved**: created `REQUEST_LIFECYCLE.md`, removed the empty misnamed file.
+2. CONSTITUTION.md's "Related Documents" list and PROMPT.md Section 27's documentation list disagree on which docs should exist. **Resolved for Phase 0**: used PROMPT.md Section 29's actual Phase 0 deliverable list as scope (constitution, architecture map, ownership, dependency rules, coding standards, approval model, provenance model, security principles, model routing, testing strategy, initial ADRs) plus README/DECISION_LOG/CONTRIBUTING for immediate usability. Deferred `INTEGRATIONS.md` and `OPERATIONS.md` — see entry below.
+3. **Domain catalog mismatch** — PROMPT.md Section 7's repo tree includes `actions`, `integrations`, `documents` domains not present in DOMAIN_OWNERSHIP.md's 13-domain catalog, which instead has `Capabilities`, `Knowledge`, `System`. **Resolved**: see `Docs/decisions/ADR_0005_domain_catalog_reconciliation.md`. User confirmed DOMAIN_OWNERSHIP.md as authoritative on 2026-07-20.
+4. `integrations` as a domain conflicts with Provider Independence (providers are implementation details, not domains). Folded into the ADR_0005 resolution.
+5. `actions` vs. `Approvals` — Constitution's Execution Ownership already assigns execution to Approvals; `actions` folds into `domains/approvals/` as an internal module, not a sibling domain. Folded into ADR_0005.
+6. Redis named as a replaceable event transport (Section 3.7) while Constitution says event infrastructure shouldn't be scaffolded before it's needed and default delivery is synchronous in-process. Not a contradiction — noted as a sequencing risk in DOMAIN_EVENTS.md (Redis serves queue/cache/lock roles from Phase 1 regardless of when/if it becomes an event transport).
+
+## 2026-07-20 — Domain catalog reconciliation decided
+
+User selected "Treat DOMAIN_OWNERSHIP.md as authoritative" when asked how to reconcile the Section 7 repo tree against the domain catalog. Recorded as ADR_0005. `ARCHITECTURE.md`'s repository tree reflects this decision and supersedes PROMPT.md Section 7 for this repository.
+
+## 2026-07-20 — Event catalog naming inconsistencies found
+
+While consolidating DOMAIN_OWNERSHIP.md's per-domain Published/Subscribed event lists into `DOMAIN_EVENTS.md`, four subscriber references were found that don't exactly match any publisher's event name (`ProjectDeadlineChanged` vs. `DeadlineChanged`; `PortfolioUpdated` with no exact publisher match; `CalendarEventCompleted` with no publisher match; `CapabilityExecutionRequested` with no publisher match). Flagged in `DOMAIN_EVENTS.md`'s "Known Inconsistencies" section rather than silently corrected, since event names are owned by their publishing domain. **Resolved 2026-07-20** — see ADR_0007 below.
+
+## 2026-07-20 — Event catalog naming mismatches resolved (ADR_0007)
+
+Fixed all four mismatches found above, directly in `DOMAIN_OWNERSHIP.md`: renamed Projects' `DeadlineChanged` to `ProjectDeadlineChanged` (matching its own naming convention and Calendar's existing subscriber expectation); repointed Conversation's subscription from the nonexistent `PortfolioUpdated` to `PortfolioSnapshotCreated`; repointed Projects' subscription from the nonexistent `CalendarEventCompleted` to `CalendarEventUpdated` (Calendar has no completion concept for events); removed Approvals' subscription to `CapabilityExecutionRequested` entirely, since that name is command-shaped and directly conflicts with the Constitution's own Event Principles ("not intentions, not commands") — approval evaluation is a synchronous Application-layer pipeline stage (REQUEST_LIFECYCLE.md's Approval Checker), not an event subscriber. Recorded as ADR_0007 since the Approvals fix touches approval architecture/orchestration, both ADR-triggering areas per CONSTITUTION.md. `DOMAIN_EVENTS.md` updated to match; its "Known Inconsistencies" section replaced with "Resolved Inconsistencies".
+
+## 2026-07-20 — INTEGRATIONS.md and OPERATIONS.md deferred
+
+PROMPT.md Section 27 lists these among required documentation, but at Phase 0 no integrations or deployed operations exist to document. Creating them now would describe future phases before they're reached, which the Constitution's No Future Scaffolding Rule treats as a defect when applied to code and this project extends the same discipline to documentation. They will be created when Phase 10 (first real OAuth integration) and Phase 1 (first deployable containers) respectively reach the point of having real content to document.
+
+## 2026-07-20 — A Neon key was reported "inside the repository" with no actual key found
+
+User stated a Neon key was already committed to the repo before Phase 1 began. A full search (tracked, untracked, `.git`, `.claude`, `.agents`) found no real key — one `npg_` grep hit was a false positive (the grep pattern itself, stored in `.claude/settings.local.json`'s permission allowlist). User confirmed no real key existed yet; none was ever found in source control. No rotation was necessary. Recorded here because "I searched and found nothing" is a claim that needs a paper trail, per the Constitution's Negative Verification principle.
+
+## 2026-07-20 — Phase 1 (Docker development foundation) completed
+
+Resolved a container-list vs. persistence-model tension in PROMPT.md: Phase 1's literal container list includes "PostgreSQL," but ADR_0002 already established Neon as the sole system of record, and the user created a real Neon account for this project. Decided (ADR_0006) that local dev connects directly to a Neon branch via `DATABASE_URL` — no local Postgres container.
+
+Neon connection was established via the Neon MCP OAuth flow initially, which required two attempts (the first callback URL's flow state had expired by the time it was submitted — likely a delay between authorizing and pasting the URL back). The user ultimately entered the connection string into `.env` manually rather than through MCP.
+
+Two real defects were found and fixed during verification (not assumed away):
+
+1. The Ollama container's healthcheck used `wget`, which does not exist in the `ollama/ollama` image (`wget: not found`). Fixed by using `ollama list` (the CLI itself talks to the local server over HTTP).
+2. The frontend container's healthcheck (`curl http://localhost:3000/`) failed with "Failed to connect" despite Next.js logging that it was ready. Cause: Docker automatically sets a `HOSTNAME` environment variable to the container id, and Next's standalone `server.js` binds to `process.env.HOSTNAME` — so it was listening on a bogus address instead of `0.0.0.0`/localhost. Fixed with an explicit `ENV HOSTNAME=0.0.0.0` in the frontend Dockerfile's runner stage.
+
+After both fixes, all six services (frontend, backend, worker, scheduler, redis, ollama) reported Docker-healthy, `/health/dependencies` confirmed the backend can reach the real Neon database, Redis, and Ollama, the worker consumed every test job the scheduler enqueued with no drops, and redis/ollama confirmed to have no published host ports.
+
+## 2026-07-20 — Real DATABASE_URL pasted into conversation context
+
+User pasted the real Neon connection string (including password) into this conversation via an `@.env` read, at which point it became part of this session's transcript. Flagged once, in the moment, per `SECURITY.md`; recommended resetting the branch's password in the Neon console at the user's convenience since this is a dev branch (ADR_0006), not production. No further action taken automatically — this is a note for future readers, not an incident requiring rotation before continuing.
+
+## 2026-07-20 — User asked to create database tables before Phase 2; declined and re-sequenced
+
+User asked to create Neon tables directly, ahead of Phase 2/3. Declined per Phase Discipline and the Migrations principle (CONSTITUTION.md): no migration framework exists yet (that's a Phase 4 deliverable, via Alembic), and the typed contracts a schema would encode (provenance records, job envelope, identifiers) don't exist as code until Phase 3. User agreed to follow the roadmap after the tradeoff was explained (AskUserQuestion). No tables were created; Phase 4 will build them properly via Alembic against the same Neon branch.
+
+## 2026-07-20 — Phase 2 (quality enforcement and CI) completed
+
+Tool selection deviated from `TESTING.md`'s original "recommended tooling" list in two places, both logged as implementation decisions rather than ADRs (they don't touch ownership, dependency direction, or any ADR-triggering area per CONSTITUTION.md): Ruff's built-in `C90`/mccabe rule was used for complexity instead of adding Radon as a separate dependency (same metric, one fewer tool to pin); MyPy was chosen over Pyright for type checking (avoids adding a Node-based CLI to an otherwise pip-only CI job). Semgrep was not added — Bandit alone was judged sufficient for Phase 2's baseline; Semgrep can be added later via a normal dependency bump if a concrete gap appears, not pre-emptively.
+
+Real defects found and fixed while actually running every tool against the real code (not assumed clean):
+
+1. **10 real mypy strict-mode errors** — missing generic type parameters on bare `dict` return types (fixed with `TypedDict`s), a stubs gap in `asyncpg` (no `py.typed` marker — acknowledged via a `[[tool.mypy.overrides]]` entry, not a per-line ignore), and `Redis.aclose()` not existing in the installed client's types (switched to the stable `Redis.close()`).
+2. **A real bug in `scripts/check_architecture.py`** — its generic-utility-directory check (`shared/`/`common/`/`utils/`/`helpers/`/`misc/`) walked the full tree without the same exclusion list used elsewhere in the script, so it flagged `.venv/`, `.mypy_cache/`, and similar third-party/cache directories as constitutional violations. Fixed by applying `EXCLUDED_DIR_NAMES` consistently and expanding it to cover cache/build directories.
+3. **A bug in my own test fixture**, not the script under test — `test_check_size_limits.py` asserted a "review warning" (100-line tier) label on a function that was actually 152 lines, which correctly matches the "strong refactor warning" (150-line) tier first. Fixed the fixture to isolate the tier it claims to test.
+4. **Three real dependency CVEs via pip-audit**, against the versions originally pinned: `pip` 25.0.1, `pytest` 8.3.5, and `starlette` 0.46.2 (transitive via FastAPI). Fixed `pip` (upgraded in the Dockerfile) and `pytest`/`pytest-asyncio` (relaxed pins to versions with the fix). `starlette` was the interesting one: bumping FastAPI's pin alone did not pull a patched starlette, because FastAPI's own requirement (`starlette>=0.46.0`) is unbounded and pip's default upgrade strategy doesn't force-upgrade an already-installed transitive dependency that still technically satisfies the range. Fixed by pinning `starlette` directly as a top-level dependency. Re-ran `pip-audit` after each fix — clean at the end, not assumed clean after the first plausible-looking change.
+
+Operational notes (not architecture, but worth keeping so the next person doesn't rediscover them): `docker cp SRC_DIR CONTAINER:DEST_DIR` nests `SRC_DIR` inside `DEST_DIR` if `DEST_DIR` already exists, silently leaving stale files in place — a bind-mounted throwaway container (`docker run -v ...`) was used instead for iterative verification. Git Bash on Windows rewrites arguments like `-w /app` into bogus Windows paths unless `MSYS_NO_PATHCONV=1` is set. Both are now documented in `TESTING.md`'s "Running Checks Locally" section.
+
+Final state: `ruff format`/`ruff check` clean, `mypy --strict` clean (`apps` + `scripts`), both custom checkers clean and unit-tested against synthetic violation fixtures, 12/12 pytest passing, `vulture`/`bandit` clean, `pip-audit` clean, `detect-secrets` found nothing in any git-tracked file, frontend `next lint`/`tsc --noEmit`/`next build` all clean. The GitHub Actions workflow (`.github/workflows/ci.yml`) encodes all of the above as three jobs (`secrets`, `backend`, `frontend`) but has not yet been exercised by an actual push/PR — that's the one verification gap carried into Phase 3.

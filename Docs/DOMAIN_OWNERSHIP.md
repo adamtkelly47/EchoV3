@@ -1876,7 +1876,7 @@ IntentResolved
 
 MemoryUpdated
 
-PortfolioUpdated
+PortfolioSnapshotCreated
 
 ResearchCompleted
 
@@ -2071,13 +2071,13 @@ MilestoneCompleted
 
 ProjectArchived
 
-DeadlineChanged
+ProjectDeadlineChanged
 
 ---
 
 ## Subscribed Events
 
-CalendarEventCompleted
+CalendarEventUpdated
 
 ApprovalGranted
 
@@ -2669,11 +2669,11 @@ ApprovalPolicyUpdated
 
 ## Subscribed Events
 
-CapabilityExecutionRequested
-
 IdentityUpdated
 
 ConfigurationUpdated
+
+Approval evaluation itself is not event-triggered. It is invoked synchronously by the Application layer's Approval Checker pipeline stage (see REQUEST_LIFECYCLE.md) as part of executing a capability plan, not by subscribing to a fired event — see ADR_0007.
 
 ---
 

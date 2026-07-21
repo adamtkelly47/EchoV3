@@ -1,0 +1,105 @@
+name: echo
+
+networks:
+  echo-internal:
+    driver: bridge
+
+volumes:
+  ollama_data:
+
+services:
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "3000:3000"
+    networks:
+      - echo-internal
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  backend:
+    build:
+      context: ./echo
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    networks:
+      - echo-internal
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  worker:
+    build:
+      context: ./echo
+    command: ["python", "-m", "apps.worker.main"]
+    env_file:
+      - .env
+    networks:
+      - echo-internal
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,sys,redis; r=redis.Redis.from_url(os.environ.get('REDIS_URL','redis://redis:6379/0'), socket_timeout=3); sys.exit(0 if r.ping() else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  scheduler:
+    build:
+      context: ./echo
+    command: ["python", "-m", "apps.scheduler.main"]
+    env_file:
+      - .env
+    networks:
+      - echo-internal
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,sys,redis; r=redis.Redis.from_url(os.environ.get('REDIS_URL','redis://redis:6379/0'), socket_timeout=3); sys.exit(0 if r.ping() else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # No host ports published for redis/ollama — internal network only,
+  # per Docs/SECURITY.md ("Ollama, PostgreSQL, and Redis are never exposed publicly").
+  redis:
+    image: redis:7-alpine
+    networks:
+      - echo-internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ollama:
+    image: ollama/ollama:latest
+    networks:
+      - echo-internal
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      # The ollama image has no curl/wget; the ollama CLI itself talks to the
+      # local server over HTTP, so it doubles as a reachability check.
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s

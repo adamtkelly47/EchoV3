@@ -1,0 +1,79 @@
+[project]
+name = "echo"
+version = "0.1.0"
+description = "Echo personal AI operating system — backend, worker, and scheduler (shared codebase, per ADR_0001)."
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.118",
+    # fastapi's own starlette requirement (>=0.46.0) is unbounded and would
+    # accept the vulnerable 0.46.2 already on disk (pip-audit: PYSEC-2026-
+    # 161/248/249/1941/1942/2280/2281) unless pinned explicitly here.
+    "starlette>=0.47.2",
+    "uvicorn[standard]>=0.32,<0.33",
+    "asyncpg>=0.30,<0.31",
+    "redis>=5.1,<5.2",
+    "httpx>=0.27,<0.28",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.7,<0.8",
+    "mypy>=1.12,<1.13",
+    # pytest 8.3.5 has PYSEC-2026-1845; fixed in 9.0.3. pytest-asyncio's pin
+    # is relaxed to match — 0.24.0 caps pytest below the fixed version.
+    "pytest>=9.0.3",
+    "pytest-asyncio>=0.25",
+    "pytest-cov>=5.0,<6.0",
+    "vulture>=2.13,<2.14",
+    "bandit>=1.7,<1.8",
+    "pip-audit>=2.7,<2.8",
+    "detect-secrets>=1.5,<1.6",
+    "types-redis>=4.6,<5.0",
+]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["apps*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+# E/F: pyflakes+pycodestyle core; I: import sort; C90: mccabe complexity
+# (used in place of a separate Radon dependency — same metric family, one
+# fewer tool to pin/maintain; see Docs/DECISION_LOG.md).
+select = ["E", "F", "I", "C90", "B", "UP"]
+mccabe.max-complexity = 10
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+exclude = ["tests/"]
+
+[[tool.mypy.overrides]]
+# asyncpg ships no py.typed marker / stubs (a known upstream gap, not an
+# Echo code issue) — acknowledged here at the config level rather than
+# suppressed with per-line ignores.
+module = "asyncpg.*"
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.coverage.run]
+source = ["apps"]
+omit = ["tests/*"]
+
+[tool.vulture]
+paths = ["apps", "scripts"]
+min_confidence = 80
+
+[tool.bandit]
+exclude_dirs = ["tests"]
