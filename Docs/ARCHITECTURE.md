@@ -65,8 +65,10 @@ echo/
                         # which the Capabilities domain owns starting Phase 5
     domains/
         conversation/
-        approvals/
-        capabilities/
+        approvals/      # populated Phase 6: models, schemas, errors, policies, service, repository
+        capabilities/   # populated Phase 5: models, errors, policies, service (no repository.py —
+                         # the registry is in-process/code-populated; only execution audit persists,
+                         # via infrastructure/database's ToolCallRepository from Phase 4)
         portfolio/
         research/
         calendar/

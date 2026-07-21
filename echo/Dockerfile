@@ -15,6 +15,7 @@ COPY pyproject.toml alembic.ini ./
 COPY core ./core
 COPY apps ./apps
 COPY infrastructure ./infrastructure
+COPY domains ./domains
 COPY migrations ./migrations
 
 # Base image's bundled pip has known advisories (pip-audit) — upgrade first.

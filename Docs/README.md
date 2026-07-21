@@ -15,7 +15,9 @@ A generic chatbot wrapper, a collection of disconnected agents, a system where a
 
 ## Current Phase
 
-**Phase 5 — Capability registry and tool execution.** Phases 0-4 (governing documents, Docker foundation, quality/CI, core runtime contracts, database foundation) are complete. Phase 5 adds the first real domain, `domains/capabilities/`: a registry (discovery through registration, never keyword lists) and an executor implementing the Constitution's Capability Execution pipeline (lookup → input validation → permission check → execution → output validation → audit, every attempt audited even on failure). Only read capabilities execute — write capabilities are registrable but blocked until the Approval Engine exists (Phase 6). Do not begin Phase 6 without explicit instruction.
+**Phase 6 — Central Approval Engine.** Phases 0-5 (governing documents, Docker foundation, quality/CI, core runtime contracts, database foundation, capability registry) are complete. Phase 6 adds `domains/approvals/`: the full proposal state machine from `APPROVAL_MODEL.md`, payload-hash binding, self-approval prevention, idempotent execution, and verification-result handling, backed by real Postgres tables. This is the hard prerequisite for all future write capabilities (`domains/capabilities/`'s `WriteCapabilityNotExecutableError` from Phase 5 is what write capabilities hit until this existed). Do not begin Phase 7 without explicit instruction.
+
+(Per an explicit standing instruction, phases are being completed and committed continuously without waiting for a go-ahead between each — see `DECISION_LOG.md`'s 2026-07-21 entry.)
 
 ## How to Read These Docs
 
