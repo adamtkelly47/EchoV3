@@ -79,8 +79,9 @@ echo/
                          # via infrastructure/database's ToolCallRepository from Phase 4)
         portfolio/
         research/
-        calendar/       # populated Phase 10: models, schemas, errors, policies, service, repository
-                         # (read-only — no write path/proposal type exists until Phase 11)
+        calendar/       # populated Phase 10 (read): models, schemas, errors, policies, service,
+                         # repository. Phase 11 (write) added write_adapters.py — concrete
+                         # WriteAdapter/ExecutionVerifier implementations for the Approval Engine
         email/
         memory/         # populated Phase 9: models, schemas, errors, policies, service, repository
         knowledge/
@@ -163,7 +164,7 @@ Cross-domain collaboration occurs only through the Application layer (`applicati
 
 ## Application Layer
 
-Per CONSTITUTION.md, `application/` contains `capabilities/`, `orchestrators/`, `workflows/`, `commands/`, `queries/` — populated one subdirectory at a time, only when something actually needs it (No Future Scaffolding). Phase 8 populated `capabilities/` (platform capabilities not owned by any single domain, e.g. `current_time`) and `orchestrators/` (`ConversationOrchestrator`, coordinating Conversation + Capabilities + the Model Gateway for one request). Phase 9 added a second orchestrator, `MemoryExtractionOrchestrator` (coordinating Memory + the Model Gateway to turn free text into candidate facts). Phase 10 added two more capabilities, `calendar.list_events`/`calendar.free_busy` (`application/capabilities/calendar_read.py`, wrapping `domains/calendar/`), plus `application/calendar_provider_factory.py` — a second instance of Phase 8's `model_gateway_factory.py` pattern (apps/ cannot import providers/ directly, so the Application layer constructs the concrete provider adapter and hands `apps/api/dependencies.py` a Protocol type instead). `workflows/`, `commands/`, `queries/` remain unpopulated until a phase needs them.
+Per CONSTITUTION.md, `application/` contains `capabilities/`, `orchestrators/`, `workflows/`, `commands/`, `queries/` — populated one subdirectory at a time, only when something actually needs it (No Future Scaffolding). Phase 8 populated `capabilities/` (platform capabilities not owned by any single domain, e.g. `current_time`) and `orchestrators/` (`ConversationOrchestrator`, coordinating Conversation + Capabilities + the Model Gateway for one request). Phase 9 added a second orchestrator, `MemoryExtractionOrchestrator` (coordinating Memory + the Model Gateway to turn free text into candidate facts). Phase 10 added two more capabilities, `calendar.list_events`/`calendar.free_busy` (`application/capabilities/calendar_read.py`, wrapping `domains/calendar/`), plus `application/calendar_provider_factory.py` — a second instance of Phase 8's `model_gateway_factory.py` pattern (apps/ cannot import providers/ directly, so the Application layer constructs the concrete provider adapter and hands `apps/api/dependencies.py` a Protocol type instead). Phase 11 added a third orchestrator, `CalendarWriteOrchestrator` (coordinating Calendar + Approvals — proposing, and later executing, a calendar write through the Phase 6 Approval Engine). `workflows/`, `commands/`, `queries/` remain unpopulated until a phase needs them.
 
 ## File and Function Discipline
 

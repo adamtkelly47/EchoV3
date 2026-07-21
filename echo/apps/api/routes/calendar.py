@@ -11,20 +11,57 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import RedirectResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from apps.api.dependencies import get_calendar_service, get_db_session
+from application.orchestrators.calendar_writes import CalendarWriteOrchestrator
+from apps.api.dependencies import (
+    get_calendar_service,
+    get_calendar_write_orchestrator,
+    get_db_session,
+)
+from apps.api.schemas.approvals import ProposalResponse
 from apps.api.schemas.calendar import (
     CalendarEventResponse,
     CalendarInfoResponse,
     CalendarListResponse,
     ConnectCallbackResponse,
+    CreateEventRequest,
     EventListResponse,
     FreeBusyPeriodResponse,
     FreeBusyResponse,
+    ModifyEventRequest,
 )
+from core.errors import ValidationError
+from domains.approvals.schemas import ActionProposal
+from domains.calendar.models import RecurringEditScope
 from domains.calendar.schemas import CalendarEvent
 from domains.calendar.service import CalendarService
 
 router = APIRouter(prefix="/calendar", tags=["calendar"])
+
+
+def _to_proposal_response(proposal: ActionProposal) -> ProposalResponse:
+    return ProposalResponse(
+        proposal_id=proposal.proposal_id,
+        user_id=proposal.user_id,
+        action_type=proposal.action_type,
+        summary=proposal.summary,
+        payload=proposal.payload,
+        target_system=proposal.target_system,
+        expected_effect=proposal.expected_effect,
+        risk_level=proposal.risk_level.value,
+        status=proposal.status.value,
+        created_at=proposal.created_at,
+        expires_at=proposal.expires_at,
+        warnings=proposal.warnings,
+    )
+
+
+def _parse_scope(scope: str) -> RecurringEditScope:
+    try:
+        return RecurringEditScope(scope)
+    except ValueError as exc:
+        raise ValidationError(
+            f"scope must be one of {[s.value for s in RecurringEditScope]}, got {scope!r}"
+        ) from exc
 
 
 def _to_response(event: CalendarEvent) -> CalendarEventResponse:
@@ -130,3 +167,80 @@ async def free_busy(
             for cal_id, periods in result.items()
         }
     )
+
+
+@router.post("/events", response_model=ProposalResponse)
+async def propose_create_event(
+    body: CreateEventRequest,
+    orchestrator: CalendarWriteOrchestrator = Depends(get_calendar_write_orchestrator),
+    session: AsyncSession = Depends(get_db_session),
+) -> ProposalResponse:
+    proposal = await orchestrator.propose_create_event(
+        body.user_id,
+        calendar_id=body.calendar_id,
+        summary=body.summary,
+        start=body.start,
+        end=body.end,
+        all_day=body.all_day,
+        timezone=body.timezone,
+        description=body.description,
+    )
+    await session.commit()
+    return _to_proposal_response(proposal)
+
+
+@router.patch("/events/{provider_event_id}", response_model=ProposalResponse)
+async def propose_modify_event(
+    provider_event_id: str,
+    body: ModifyEventRequest,
+    orchestrator: CalendarWriteOrchestrator = Depends(get_calendar_write_orchestrator),
+    session: AsyncSession = Depends(get_db_session),
+) -> ProposalResponse:
+    proposal = await orchestrator.propose_modify_event(
+        body.user_id,
+        calendar_id=body.calendar_id,
+        provider_event_id=provider_event_id,
+        recurring_event_id=body.recurring_event_id,
+        scope=_parse_scope(body.scope),
+        summary=body.summary,
+        description=body.description,
+        start=body.start,
+        end=body.end,
+        all_day=body.all_day,
+        timezone=body.timezone,
+    )
+    await session.commit()
+    return _to_proposal_response(proposal)
+
+
+@router.delete("/events/{provider_event_id}", response_model=ProposalResponse)
+async def propose_delete_event(
+    provider_event_id: str,
+    user_id: str,
+    calendar_id: str = "primary",
+    recurring_event_id: str | None = None,
+    scope: str = "single_instance",
+    orchestrator: CalendarWriteOrchestrator = Depends(get_calendar_write_orchestrator),
+    session: AsyncSession = Depends(get_db_session),
+) -> ProposalResponse:
+    proposal = await orchestrator.propose_delete_event(
+        user_id,
+        calendar_id=calendar_id,
+        provider_event_id=provider_event_id,
+        recurring_event_id=recurring_event_id,
+        scope=_parse_scope(scope),
+    )
+    await session.commit()
+    return _to_proposal_response(proposal)
+
+
+@router.post("/proposals/{proposal_id}/execute", response_model=ProposalResponse)
+async def execute_proposal(
+    proposal_id: str,
+    user_id: str,
+    orchestrator: CalendarWriteOrchestrator = Depends(get_calendar_write_orchestrator),
+    session: AsyncSession = Depends(get_db_session),
+) -> ProposalResponse:
+    proposal = await orchestrator.execute_proposal(proposal_id, user_id)
+    await session.commit()
+    return _to_proposal_response(proposal)

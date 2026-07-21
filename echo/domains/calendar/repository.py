@@ -105,6 +105,7 @@ class CalendarEventRepository(Protocol):
         self, user_id: str, calendar_id: str, time_min: datetime, time_max: datetime
     ) -> list[CalendarEvent]: ...
     async def get(self, user_id: str, provider_event_id: str) -> CalendarEvent | None: ...
+    async def delete(self, user_id: str, provider_event_id: str) -> None: ...
 
 
 class PostgresCalendarCredentialRepository:
@@ -206,11 +207,25 @@ class PostgresCalendarEventRepository:
         return [_row_to_event(row) for row in result.scalars().all()]
 
     async def get(self, user_id: str, provider_event_id: str) -> CalendarEvent | None:
+        row = await self._get_row(user_id, provider_event_id)
+        return _row_to_event(row) if row is not None else None
+
+    async def delete(self, user_id: str, provider_event_id: str) -> None:
+        """Evicts the cache entry entirely (PROMPT.md Phase 11) rather than
+        marking it cancelled — Google's own `events.list` excludes cancelled
+        events by default, so a deleted event should not appear in a plain
+        listing either, and no phase before this one needs to see cancelled
+        events specifically (No Future Scaffolding)."""
+        row = await self._get_row(user_id, provider_event_id)
+        if row is not None:
+            await self._session.delete(row)
+            await self._session.flush()
+
+    async def _get_row(self, user_id: str, provider_event_id: str) -> CalendarEventRow | None:
         result = await self._session.execute(
             select(CalendarEventRow).where(
                 CalendarEventRow.user_id == user_id,
                 CalendarEventRow.provider_event_id == provider_event_id,
             )
         )
-        row = result.scalar_one_or_none()
-        return _row_to_event(row) if row is not None else None
+        return result.scalar_one_or_none()

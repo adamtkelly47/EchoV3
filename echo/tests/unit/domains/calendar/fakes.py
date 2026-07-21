@@ -40,6 +40,9 @@ class FakeCalendarEventRepository:
     async def get(self, user_id: str, provider_event_id: str) -> CalendarEvent | None:
         return self._by_key.get((user_id, provider_event_id))
 
+    async def delete(self, user_id: str, provider_event_id: str) -> None:
+        self._by_key.pop((user_id, provider_event_id), None)
+
 
 class FakeCalendarProvider:
     """Configurable stand-in for CalendarProviderPort. Every method's
@@ -62,6 +65,14 @@ class FakeCalendarProvider:
         self.events_response: list[dict[str, Any]] = []
         self.get_event_response: dict[str, Any] = {}
         self.free_busy_response: dict[str, Any] = {"calendars": {}}
+        self.create_event_response: dict[str, Any] = {
+            "id": "created-event-id",
+            "summary": "Created",
+        }
+        self.update_event_response: dict[str, Any] = {
+            "id": "existing-event-id",
+            "summary": "Updated",
+        }
         self.raise_on_refresh: Exception | None = None
         self.calls: list[tuple[str, dict[str, Any]]] = []
 
@@ -132,6 +143,41 @@ class FakeCalendarProvider:
             )
         )
         return self.free_busy_response
+
+    async def create_event(
+        self, access_token: str, *, calendar_id: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        self.calls.append(
+            (
+                "create_event",
+                {"access_token": access_token, "calendar_id": calendar_id, "body": body},
+            )
+        )
+        return self.create_event_response
+
+    async def update_event(
+        self, access_token: str, *, calendar_id: str, event_id: str, body: dict[str, Any]
+    ) -> dict[str, Any]:
+        self.calls.append(
+            (
+                "update_event",
+                {
+                    "access_token": access_token,
+                    "calendar_id": calendar_id,
+                    "event_id": event_id,
+                    "body": body,
+                },
+            )
+        )
+        return self.update_event_response
+
+    async def delete_event(self, access_token: str, *, calendar_id: str, event_id: str) -> None:
+        self.calls.append(
+            (
+                "delete_event",
+                {"access_token": access_token, "calendar_id": calendar_id, "event_id": event_id},
+            )
+        )
 
 
 class FakeAuditRepository:

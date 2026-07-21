@@ -56,6 +56,13 @@ class CalendarProviderPort(Protocol):
         self, access_token: str, *, calendar_ids: list[str], time_min: datetime, time_max: datetime
     ) -> dict[str, Any]: ...
     def build_authorization_url(self, state: str) -> str: ...
+    async def create_event(
+        self, access_token: str, *, calendar_id: str, body: dict[str, Any]
+    ) -> dict[str, Any]: ...
+    async def update_event(
+        self, access_token: str, *, calendar_id: str, event_id: str, body: dict[str, Any]
+    ) -> dict[str, Any]: ...
+    async def delete_event(self, access_token: str, *, calendar_id: str, event_id: str) -> None: ...
 
 
 class CalendarService:
@@ -112,7 +119,7 @@ class CalendarService:
         return credential
 
     async def list_calendars(self, user_id: str) -> list[CalendarInfo]:
-        access_token = await self._get_valid_access_token(user_id)
+        access_token = await self.get_valid_access_token(user_id)
         raw = await self._provider.list_calendars(access_token)
         return parse_calendar_list(raw)
 
@@ -137,7 +144,7 @@ class CalendarService:
             ):
                 return cached
 
-        access_token = await self._get_valid_access_token(user_id)
+        access_token = await self.get_valid_access_token(user_id)
         raw_events = await self._provider.list_events(
             access_token, calendar_id=calendar_id, time_min=time_min, time_max=time_max, query=query
         )
@@ -157,7 +164,7 @@ class CalendarService:
         if cached is not None and not is_stale(cached.synced_at, self._clock.now_utc(), _CACHE_TTL):
             return cached
 
-        access_token = await self._get_valid_access_token(user_id)
+        access_token = await self.get_valid_access_token(user_id)
         raw = await self._provider.get_event(
             access_token, calendar_id=calendar_id, event_id=event_id
         )
@@ -170,13 +177,34 @@ class CalendarService:
     async def free_busy(
         self, user_id: str, *, calendar_ids: list[str], time_min: datetime, time_max: datetime
     ) -> dict[str, list[FreeBusyPeriod]]:
-        access_token = await self._get_valid_access_token(user_id)
+        access_token = await self.get_valid_access_token(user_id)
         raw = await self._provider.free_busy(
             access_token, calendar_ids=calendar_ids, time_min=time_min, time_max=time_max
         )
         return {calendar_id: parse_free_busy(raw, calendar_id) for calendar_id in calendar_ids}
 
-    async def _get_valid_access_token(self, user_id: str) -> str:
+    async def cache_event(
+        self, user_id: str, calendar_id: str, raw_event: dict[str, Any]
+    ) -> CalendarEvent:
+        """Phase 11: after a successful create/modify, the write path
+        upserts the result into the same cache reads use, so a `list_events`
+        immediately after doesn't need to wait out `_CACHE_TTL` to see it."""
+        event = parse_event(
+            raw_event, user_id=user_id, calendar_id=calendar_id, synced_at=self._clock.now_utc()
+        )
+        await self._events.upsert_many([event])
+        return event
+
+    async def evict_cached_event(self, user_id: str, provider_event_id: str) -> None:
+        """Phase 11: after a successful delete, so a `list_events` doesn't
+        keep showing an event Google itself no longer lists by default."""
+        await self._events.delete(user_id, provider_event_id)
+
+    async def get_valid_access_token(self, user_id: str) -> str:
+        """Public (Phase 11): domains/calendar/write_adapters.py's
+        WriteAdapter/ExecutionVerifier implementations need a valid token
+        the same way every read method here does — refresh-if-needed stays
+        centralized in one place rather than duplicated."""
         credential = await self._credentials.get_for_user(user_id)
         if credential is None:
             raise CalendarCredentialNotFoundError(f"no calendar connection for user {user_id!r}")

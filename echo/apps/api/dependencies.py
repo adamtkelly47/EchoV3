@@ -17,10 +17,16 @@ from application.capabilities.calendar_read import (
 )
 from application.capabilities.current_time import build_current_time_capability
 from application.model_gateway_factory import ModelGatewayPort, build_model_gateway
+from application.orchestrators.calendar_writes import CalendarWriteOrchestrator
 from application.orchestrators.conversation import ConversationOrchestrator
 from application.orchestrators.memory_extraction import MemoryExtractionOrchestrator
 from core.config import get_settings
 from core.time import SystemClock
+from domains.approvals.repository import (
+    PostgresApprovalDecisionRepository,
+    PostgresApprovalProposalRepository,
+)
+from domains.approvals.service import ApprovalService
 from domains.calendar.repository import (
     PostgresCalendarCredentialRepository,
     PostgresCalendarEventRepository,
@@ -125,3 +131,21 @@ def get_calendar_service(
         SystemClock(),
         get_oauth_state_secret(),
     )
+
+
+def get_approval_service(
+    session: AsyncSession = Depends(get_db_session),
+) -> ApprovalService:
+    return ApprovalService(
+        PostgresApprovalProposalRepository(session),
+        PostgresApprovalDecisionRepository(session),
+        PostgresAuditRepository(session),
+        SystemClock(),
+    )
+
+
+def get_calendar_write_orchestrator(
+    approvals: ApprovalService = Depends(get_approval_service),
+    calendar: CalendarService = Depends(get_calendar_service),
+) -> CalendarWriteOrchestrator:
+    return CalendarWriteOrchestrator(approvals, calendar, get_google_calendar_provider())

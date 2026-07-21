@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
 
+from apps.api.routes.approvals import router as approvals_router
 from apps.api.routes.calendar import router as calendar_router
 from apps.api.routes.conversations import router as conversations_router
 from apps.api.routes.memory import router as memory_router
@@ -28,6 +29,7 @@ app = FastAPI(title="Echo API", version="0.1.0")
 app.include_router(conversations_router)
 app.include_router(memory_router)
 app.include_router(calendar_router)
+app.include_router(approvals_router)
 
 # Frontend runs on a different origin (localhost:3000 vs. this API's
 # localhost:8000) — the browser needs explicit CORS permission. Origin is
