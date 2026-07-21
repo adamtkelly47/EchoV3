@@ -41,6 +41,7 @@ class ModelRequest(BaseModel):
     context: dict[str, Any] = {}
     timeout_seconds: int = 30
     max_tokens: int | None = None
+    temperature: float | None = None
 
 
 class ModelResponse(BaseModel):

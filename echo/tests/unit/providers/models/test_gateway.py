@@ -78,3 +78,24 @@ async def test_structured_output_missing_required_field_is_rejected() -> None:
         await gateway.generate_structured(
             ModelRequest(task_type=TaskType.CLASSIFICATION, prompt="x"), _Structured
         )
+
+
+async def test_json_wrapped_in_prose_is_still_extracted_and_validated() -> None:
+    """Small/local models often ignore "reply with only JSON" — the object
+    is extracted from surrounding prose rather than requiring a pure-JSON
+    response, without weakening the actual schema validation."""
+    gateway, _, _ = _gateway(
+        ollama_output='Sure, here is the answer: {"label": "positive", "confidence": 0.9}'
+    )
+    result = await gateway.generate_structured(
+        ModelRequest(task_type=TaskType.CLASSIFICATION, prompt="x"), _Structured
+    )
+    assert result.label == "positive"
+
+
+async def test_prose_with_invalid_json_inside_is_still_rejected() -> None:
+    gateway, _, _ = _gateway(ollama_output='I think the answer is {"label": "positive"} probably')
+    with pytest.raises(ModelOutputInvalidError):
+        await gateway.generate_structured(
+            ModelRequest(task_type=TaskType.CLASSIFICATION, prompt="x"), _Structured
+        )

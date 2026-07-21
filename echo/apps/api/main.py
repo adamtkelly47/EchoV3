@@ -1,7 +1,5 @@
-"""Backend entrypoint. Domain, capability, and request-pipeline logic does
-not live here yet — that begins Phase 5+ (see Docs/REQUEST_LIFECYCLE.md).
-This module wires the Phase 3 core contracts (config, logging, correlation)
-into a running FastAPI app and exposes the Phase 1 health endpoints.
+"""Backend entrypoint. Wires the core contracts (config, logging,
+correlation) and the API routes into a running FastAPI app.
 """
 
 from collections.abc import Awaitable, Callable
@@ -10,8 +8,10 @@ from typing import TypedDict
 import asyncpg
 import httpx
 from fastapi import FastAPI, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from redis.asyncio import Redis
 
+from apps.api.routes.conversations import router as conversations_router
 from core.config import get_settings
 from core.logging import configure_logging, get_logger
 from core.observability import correlation_scope
@@ -21,6 +21,18 @@ configure_logging(settings.log_level)
 logger = get_logger("echo.api")
 
 app = FastAPI(title="Echo API", version="0.1.0")
+app.include_router(conversations_router)
+
+# Frontend runs on a different origin (localhost:3000 vs. this API's
+# localhost:8000) — the browser needs explicit CORS permission. Origin is
+# hardcoded to the local dev frontend for this phase; real deployment
+# configuration is a later phase's concern, not retrofitted here.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
 
 
 @app.middleware("http")

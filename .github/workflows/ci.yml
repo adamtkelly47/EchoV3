@@ -47,19 +47,19 @@ jobs:
         run: ruff check .
 
       - name: Type check (mypy)
-        run: mypy apps scripts core infrastructure migrations domains providers
+        run: mypy apps scripts core infrastructure migrations domains providers application
 
       - name: File/function size limits
-        run: python scripts/check_size_limits.py apps core infrastructure domains providers
+        run: python scripts/check_size_limits.py apps core infrastructure domains providers application
 
       - name: Architecture / import boundary check
         run: python scripts/check_architecture.py .
 
       - name: Dead code (vulture)
-        run: vulture apps core infrastructure domains providers scripts
+        run: vulture apps core infrastructure domains providers application scripts
 
       - name: Security scan (bandit)
-        run: bandit -r apps core infrastructure domains providers -c pyproject.toml
+        run: bandit -r apps core infrastructure domains providers application -c pyproject.toml
 
       - name: Dependency vulnerability scan (pip-audit)
         run: pip-audit

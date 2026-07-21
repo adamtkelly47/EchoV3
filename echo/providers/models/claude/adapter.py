@@ -26,12 +26,21 @@ class ClaudeAdapter:
     async def generate(self, request: ModelRequest) -> ModelResponse:
         start = self._clock.monotonic()
         try:
-            message = await self._client.messages.create(
-                model=self._model_name,
-                max_tokens=request.max_tokens or 1024,
-                messages=[{"role": "user", "content": request.prompt}],
-                timeout=request.timeout_seconds,
-            )
+            if request.temperature is not None:
+                message = await self._client.messages.create(
+                    model=self._model_name,
+                    max_tokens=request.max_tokens or 1024,
+                    messages=[{"role": "user", "content": request.prompt}],
+                    timeout=request.timeout_seconds,
+                    temperature=request.temperature,
+                )
+            else:
+                message = await self._client.messages.create(
+                    model=self._model_name,
+                    max_tokens=request.max_tokens or 1024,
+                    messages=[{"role": "user", "content": request.prompt}],
+                    timeout=request.timeout_seconds,
+                )
         except anthropic.APIError as exc:
             raise ProviderUnavailableError(f"Claude request failed: {exc}") from exc
 

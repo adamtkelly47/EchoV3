@@ -16,6 +16,10 @@ from domains.approvals.repository import (  # noqa: F401 — registers tables on
     ApprovalDecisionRow,
     ApprovalProposalRow,
 )
+from domains.conversation.repository import (  # noqa: F401 — registers tables on Base.metadata
+    ConversationSessionRow,
+    MessageRow,
+)
 from infrastructure.database.base import Base
 from infrastructure.database.engine import create_engine, to_asyncpg_url
 from infrastructure.database.tables import (  # noqa: F401 — registers tables on Base.metadata

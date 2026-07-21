@@ -6,6 +6,9 @@ raw JSON response never leaves this module — see contracts.ModelResponse.
 
 from __future__ import annotations
 
+import json
+from collections.abc import AsyncIterator
+
 import httpx
 
 from core.errors import ProviderUnavailableError
@@ -19,22 +22,25 @@ class OllamaAdapter:
         self._model_name = model_name
         self._clock = clock
 
+    def _payload(self, request: ModelRequest, *, stream: bool) -> dict[str, object]:
+        options: dict[str, object] = {}
+        if request.max_tokens:
+            options["num_predict"] = request.max_tokens
+        if request.temperature is not None:
+            options["temperature"] = request.temperature
+        return {
+            "model": self._model_name,
+            "prompt": request.prompt,
+            "stream": stream,
+            **({"options": options} if options else {}),
+        }
+
     async def generate(self, request: ModelRequest) -> ModelResponse:
         start = self._clock.monotonic()
         try:
             async with httpx.AsyncClient(timeout=request.timeout_seconds) as client:
                 response = await client.post(
-                    f"{self._base_url}/api/generate",
-                    json={
-                        "model": self._model_name,
-                        "prompt": request.prompt,
-                        "stream": False,
-                        **(
-                            {"options": {"num_predict": request.max_tokens}}
-                            if request.max_tokens
-                            else {}
-                        ),
-                    },
+                    f"{self._base_url}/api/generate", json=self._payload(request, stream=False)
                 )
                 response.raise_for_status()
                 data = response.json()
@@ -51,3 +57,29 @@ class OllamaAdapter:
             latency_ms=latency_ms,
             cost_estimate_usd=0.0,  # local inference — no per-token API cost
         )
+
+    async def generate_stream(self, request: ModelRequest) -> AsyncIterator[str]:
+        """Yields text deltas as they arrive — the streaming half of
+        PROMPT.md Phase 8's "Streaming response API." Ollama's `/api/generate`
+        with `stream: true` returns newline-delimited JSON objects, each
+        carrying one `response` fragment."""
+        try:
+            async with (
+                httpx.AsyncClient(timeout=request.timeout_seconds) as client,
+                client.stream(
+                    "POST",
+                    f"{self._base_url}/api/generate",
+                    json=self._payload(request, stream=True),
+                ) as response,
+            ):
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                    chunk = json.loads(line)
+                    if chunk.get("response"):
+                        yield chunk["response"]
+                    if chunk.get("done"):
+                        break
+        except httpx.HTTPError as exc:
+            raise ProviderUnavailableError(f"Ollama streaming request failed: {exc}") from exc

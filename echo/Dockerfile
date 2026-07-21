@@ -17,6 +17,7 @@ COPY apps ./apps
 COPY infrastructure ./infrastructure
 COPY domains ./domains
 COPY providers ./providers
+COPY application ./application
 COPY migrations ./migrations
 
 # Base image's bundled pip has known advisories (pip-audit) — upgrade first.

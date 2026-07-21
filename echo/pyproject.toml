@@ -41,7 +41,7 @@ requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["apps*", "core*", "infrastructure*", "domains*", "providers*"]
+include = ["apps*", "core*", "infrastructure*", "domains*", "providers*", "application*"]
 
 [tool.ruff]
 line-length = 100
@@ -53,6 +53,13 @@ target-version = "py312"
 # fewer tool to pin/maintain; see Docs/DECISION_LOG.md).
 select = ["E", "F", "I", "C90", "B", "UP"]
 mccabe.max-complexity = 10
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's Depends() is specifically designed to sit in a default argument
+# (it's how FastAPI's DI resolves per-request) — B008 exists to catch
+# accidental mutable-default footguns, not this. This is FastAPI's own
+# documented workaround, not a project-specific suppression.
+extend-immutable-calls = ["fastapi.Depends"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -73,11 +80,11 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 
 [tool.coverage.run]
-source = ["apps", "core", "infrastructure", "domains", "providers"]
+source = ["apps", "core", "infrastructure", "domains", "providers", "application"]
 omit = ["tests/*"]
 
 [tool.vulture]
-paths = ["apps", "core", "infrastructure", "domains", "providers", "scripts"]
+paths = ["apps", "core", "infrastructure", "domains", "providers", "application", "scripts"]
 min_confidence = 80
 
 [tool.bandit]

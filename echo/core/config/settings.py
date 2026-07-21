@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     # core, never the reverse) — the gateway converts it to the enum itself.
     anthropic_api_key: str | None = None
     claude_model_name: str = "claude-sonnet-5"
-    ollama_model_name: str = "smollm2:135m"
+    ollama_model_name: str = "llama3.2:1b"
     default_model_provider: str = "ollama"
 
 

@@ -44,9 +44,17 @@ Inside `echo/`:
 ```text
 echo/
     apps/
-        api/            # FastAPI app: routes, dependencies, middleware wiring
+        api/            # FastAPI app: main.py (entrypoint+middleware), routes/, schemas/,
+                        # dependencies.py — the API layer lives entirely here (ADR_0008);
+                        # there is no separate top-level api/ directory
         worker/         # Worker entrypoint: job consumption loop
         scheduler/      # Scheduler entrypoint: schedule definitions, job creation
+    application/        # populated Phase 8 (ADR: none needed — just filling in the structure
+                        # CONSTITUTION.md already specified once cross-domain coordination
+                        # was first needed)
+        capabilities/   # exposes platform capabilities not owned by a single domain (e.g.
+                        # current_time)
+        orchestrators/  # coordinates multiple domains for one complete request
     core/
         config/         # centralized configuration
         errors/         # common error taxonomy
@@ -102,11 +110,6 @@ echo/
         cache/          # not yet populated
         secrets/        # not yet populated — no secret manager integration exists yet
         http/           # not yet populated
-    api/
-        routes/
-        schemas/
-        dependencies/
-        middleware/
     tests/
         unit/
         integration/    # populated Phase 4: repository tests against the real Neon dev branch
@@ -154,9 +157,9 @@ Concrete rules enforced by architecture tests (Phase 2):
 
 Cross-domain collaboration occurs only through the Application layer (`application/capabilities/`, `application/orchestrators/`, `application/workflows/`, `application/commands/`, `application/queries/` — created when Application-layer work begins) or through published domain events (DOMAIN_EVENTS.md). Direct domain-to-domain imports are a build failure, not a style warning.
 
-## Application Layer (created as needed, not pre-scaffolded)
+## Application Layer
 
-Per CONSTITUTION.md, `application/` will contain `capabilities/`, `orchestrators/`, `workflows/`, `commands/`, `queries/` once cross-domain coordination work begins (Phase 5+). It is not created empty during Phase 0 — creating unused orchestration folders now would violate the No Future Scaffolding Rule.
+Per CONSTITUTION.md, `application/` contains `capabilities/`, `orchestrators/`, `workflows/`, `commands/`, `queries/` — populated one subdirectory at a time, only when something actually needs it (No Future Scaffolding). Phase 8 populated `capabilities/` (platform capabilities not owned by any single domain, e.g. `current_time`) and `orchestrators/` (`ConversationOrchestrator`, coordinating Conversation + Capabilities + the Model Gateway for one request). `workflows/`, `commands/`, `queries/` remain unpopulated until a phase needs them.
 
 ## File and Function Discipline
 

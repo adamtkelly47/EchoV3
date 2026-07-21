@@ -15,7 +15,7 @@ A generic chatbot wrapper, a collection of disconnected agents, a system where a
 
 ## Current Phase
 
-**Phase 7 — Model gateway.** Phases 0-6 (governing documents, Docker foundation, quality/CI, core runtime contracts, database foundation, capability registry, approval engine) are complete. Phase 7 adds `providers/models/`: a common `ModelRequest`/`ModelResponse` contract, real Claude and Ollama adapters (provider SDK objects never escape the adapter), a deterministic escalation policy, verified per-token Claude pricing, and a `ModelGateway` that switches providers through configuration, never prompt wording or model self-selection. Do not begin Phase 8 without explicit instruction.
+**Phase 8 — Conversation loop and provenance grounding.** Phases 0-7 (governing documents, Docker foundation, quality/CI, core runtime contracts, database foundation, capability registry, approval engine, model gateway) are complete. Phase 8 adds `domains/conversation/`, the first real capability (`system.current_time`), and `application/orchestrators/conversation.py` — a minimal Request Lifecycle slice (message -> Capability Planner -> Capability Executor -> evidence -> Response Generator -> persistence), exposed via `apps/api/routes/conversations.py` and a minimal chat UI. Live testing against the real local model surfaced and fixed two small-model reliability defects (a refusal reflex on evidence-grounded prompts, and a Capability Planner that wasn't discriminating on message content at all) — see `Docs/DECISION_LOG.md`'s Phase 8 entry for the full diagnosis.
 
 (Per an explicit standing instruction, phases are being completed and committed continuously without waiting for a go-ahead between each — see `DECISION_LOG.md`'s 2026-07-21 entries.)
 
