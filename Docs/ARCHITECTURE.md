@@ -80,9 +80,10 @@ echo/
         identity/
         system/
     providers/
-        models/
-            claude/
-            ollama/
+        models/         # populated Phase 7: contracts.py, gateway.py, escalation.py
+            claude/      # adapter.py, pricing.py — unit-tested against a mocked SDK client
+                         # (no live API key in this dev environment)
+            ollama/      # adapter.py — live-tested against the running container
         brokerage/
             schwab/
         calendar/

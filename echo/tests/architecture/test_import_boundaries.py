@@ -77,3 +77,12 @@ def test_domain_importing_its_own_submodule_is_not_flagged() -> None:
         imported_names=["domains.portfolio.models"],
     )
     assert violations == []
+
+
+def test_provider_importing_a_domain_is_flagged() -> None:
+    violations = check_module(
+        module_name="providers.models.claude.adapter",
+        file_name="adapter.py",
+        imported_names=["domains.approvals.service"],
+    )
+    assert any("providers-must-not-import-domains" in v for v in violations)

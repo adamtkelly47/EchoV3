@@ -20,6 +20,15 @@ class Settings(BaseSettings):
     echo_env: str = "development"
     log_level: str = "INFO"
 
+    # Model gateway (Phase 7). `default_model_provider` is a plain string,
+    # not providers.models.contracts.Provider, so core/ never imports from
+    # providers/ (CONSTITUTION.md dependency direction: providers depend on
+    # core, never the reverse) — the gateway converts it to the enum itself.
+    anthropic_api_key: str | None = None
+    claude_model_name: str = "claude-sonnet-5"
+    ollama_model_name: str = "smollm2:135m"
+    default_model_provider: str = "ollama"
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -15,9 +15,9 @@ A generic chatbot wrapper, a collection of disconnected agents, a system where a
 
 ## Current Phase
 
-**Phase 6 — Central Approval Engine.** Phases 0-5 (governing documents, Docker foundation, quality/CI, core runtime contracts, database foundation, capability registry) are complete. Phase 6 adds `domains/approvals/`: the full proposal state machine from `APPROVAL_MODEL.md`, payload-hash binding, self-approval prevention, idempotent execution, and verification-result handling, backed by real Postgres tables. This is the hard prerequisite for all future write capabilities (`domains/capabilities/`'s `WriteCapabilityNotExecutableError` from Phase 5 is what write capabilities hit until this existed). Do not begin Phase 7 without explicit instruction.
+**Phase 7 — Model gateway.** Phases 0-6 (governing documents, Docker foundation, quality/CI, core runtime contracts, database foundation, capability registry, approval engine) are complete. Phase 7 adds `providers/models/`: a common `ModelRequest`/`ModelResponse` contract, real Claude and Ollama adapters (provider SDK objects never escape the adapter), a deterministic escalation policy, verified per-token Claude pricing, and a `ModelGateway` that switches providers through configuration, never prompt wording or model self-selection. Do not begin Phase 8 without explicit instruction.
 
-(Per an explicit standing instruction, phases are being completed and committed continuously without waiting for a go-ahead between each — see `DECISION_LOG.md`'s 2026-07-21 entry.)
+(Per an explicit standing instruction, phases are being completed and committed continuously without waiting for a go-ahead between each — see `DECISION_LOG.md`'s 2026-07-21 entries.)
 
 ## How to Read These Docs
 

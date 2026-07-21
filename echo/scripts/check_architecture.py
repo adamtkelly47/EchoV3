@@ -74,6 +74,16 @@ RULES: tuple[Rule, ...] = (
         exempt_filenames=frozenset({"repository.py"}),
         message="only a domain's repository.py may import a database driver directly",
     ),
+    Rule(
+        name="providers-must-not-import-domains",
+        source_prefix="providers.",
+        forbidden_import_prefixes=("domains.",),
+        message=(
+            "providers must not import domains — a provider (e.g. a model adapter) "
+            "returns data, it never calls into business logic or executes actions "
+            "(CONSTITUTION.md: model calls cannot directly execute external actions)"
+        ),
+    ),
 )
 
 
