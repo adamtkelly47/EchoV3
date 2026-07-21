@@ -46,7 +46,10 @@ from domains.portfolio.service import PortfolioProviderPort, PortfolioService
 from infrastructure.database.engine import session_scope
 from infrastructure.database.repositories.audit import PostgresAuditRepository
 from infrastructure.database.repositories.observability import PostgresToolCallRepository
-from infrastructure.database.repositories.provenance import PostgresSourceRecordRepository
+from infrastructure.database.repositories.provenance import (
+    PostgresComputedValueRecordRepository,
+    PostgresSourceRecordRepository,
+)
 from infrastructure.secrets.encryption import SecretCipher
 
 
@@ -175,4 +178,5 @@ def get_portfolio_service(
         PostgresAuditRepository(session),
         SystemClock(),
         get_oauth_state_secret(),
+        PostgresComputedValueRecordRepository(session),
     )

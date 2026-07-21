@@ -49,3 +49,16 @@ class SchwabAccountNotFoundError(EchoError):
     retryable = False
     severity = Severity.LOW
     http_status = 404
+
+
+class PortfolioSnapshotNotFoundError(EchoError):
+    """Raised by the Phase 13 dashboard calculations when no sync has ever
+    completed for this user — there is deliberately no fallback to
+    live-computing a snapshot on the fly (PROMPT.md Phase 13 verification 1:
+    "every displayed number traces to snapshot records"), only ever the
+    last immutable one `POST /portfolio/sync` produced."""
+
+    code = "portfolio_snapshot_not_found"
+    retryable = False
+    severity = Severity.LOW
+    http_status = 404

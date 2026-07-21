@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from core.provenance import ComputedValueRecord
 from domains.portfolio.schemas import (
     Account,
     AccountBalance,
@@ -58,6 +59,9 @@ class FakePortfolioRepository:
             if p.user_id == user_id and p.account_id == account_id
         ]
 
+    async def list_all_positions(self, user_id: str) -> list[Position]:
+        return [p for p in self.positions.values() if p.user_id == user_id]
+
     async def save_balance(self, balance: AccountBalance) -> None:
         self.balances.append(balance)
 
@@ -86,6 +90,20 @@ class FakeSourceRecordRepository:
         self.saved.append(record)
 
     async def get(self, record_id: str) -> Any:
+        for record in self.saved:
+            if record.record_id == record_id:
+                return record
+        return None
+
+
+class FakeComputedValueRecordRepository:
+    def __init__(self) -> None:
+        self.saved: list[ComputedValueRecord] = []
+
+    async def save(self, record: ComputedValueRecord) -> None:
+        self.saved.append(record)
+
+    async def get(self, record_id: str) -> ComputedValueRecord | None:
         for record in self.saved:
             if record.record_id == record_id:
                 return record

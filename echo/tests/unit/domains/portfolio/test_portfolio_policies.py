@@ -6,9 +6,16 @@ from domains.portfolio.errors import SchwabOAuthStateInvalidError, SchwabRedirec
 from domains.portfolio.models import AssetType
 from domains.portfolio.policies import (
     build_snapshot,
+    compute_asset_class_exposure,
+    compute_concentration_warnings,
+    compute_cross_account_exposure,
+    compute_gain_loss,
+    compute_position_weights,
+    compute_sector_exposure,
     extract_code_from_redirect,
     generate_oauth_state,
     is_refresh_token_expired,
+    is_snapshot_stale,
     mask_account_number,
     needs_refresh,
     parse_account,
@@ -318,3 +325,104 @@ def test_extract_code_from_redirect_handles_bare_code() -> None:
 def test_extract_code_from_redirect_rejects_url_without_code() -> None:
     with pytest.raises(SchwabRedirectValueInvalidError):
         extract_code_from_redirect("https://127.0.0.1:8182/?error=access_denied")
+
+
+def _position(**overrides: object) -> Position:
+    defaults: dict[str, object] = {
+        "account_id": "account_1",
+        "user_id": "user_1",
+        "symbol": "AAPL",
+        "asset_type": AssetType.EQUITY,
+        "quantity": 100.0,
+        "market_value": 18500.0,
+        "average_price": 150.0,
+        "source_record_id": "s",
+        "synced_at": datetime(2026, 1, 1, tzinfo=UTC),
+    }
+    defaults.update(overrides)
+    return Position(**defaults)  # type: ignore[arg-type]
+
+
+def test_compute_position_weights_sums_to_one_hundred_percent() -> None:
+    positions = [
+        _position(symbol="AAPL", market_value=7500.0),
+        _position(symbol="MSFT", market_value=2500.0),
+    ]
+    weights = compute_position_weights(positions, total_market_value=10000.0)
+    assert weights[0].weight_percent == 75.0
+    assert weights[1].weight_percent == 25.0
+
+
+def test_compute_position_weights_excludes_missing_market_value() -> None:
+    positions = [_position(symbol="AAPL", market_value=None)]
+    weights = compute_position_weights(positions, total_market_value=10000.0)
+    assert weights == []
+
+
+def test_compute_asset_class_exposure_groups_by_type() -> None:
+    positions = [
+        _position(symbol="AAPL", asset_type=AssetType.EQUITY, market_value=6000.0),
+        _position(symbol="SCHF", asset_type=AssetType.ETF, market_value=4000.0),
+    ]
+    exposure = compute_asset_class_exposure(positions, total_market_value=10000.0)
+    by_type = {e.asset_type: e.weight_percent for e in exposure}
+    assert by_type[AssetType.EQUITY] == 60.0
+    assert by_type[AssetType.ETF] == 40.0
+
+
+def test_compute_sector_exposure_is_a_single_unknown_bucket() -> None:
+    """No real sector data source exists until the Research domain
+    (PROMPT.md Phase 16+) — this must never fabricate a per-position
+    mapping (Docs/DECISION_LOG.md's Phase 13 entry)."""
+    exposure = compute_sector_exposure(total_market_value=10000.0)
+    assert len(exposure) == 1
+    assert exposure[0].sector == "Unknown"
+    assert exposure[0].weight_percent == 100.0
+
+
+def test_compute_cross_account_exposure_only_includes_multi_account_symbols() -> None:
+    positions = [
+        _position(symbol="AAPL", account_id="account_1", quantity=100.0, market_value=18500.0),
+        _position(symbol="AAPL", account_id="account_2", quantity=50.0, market_value=9250.0),
+        _position(symbol="MSFT", account_id="account_1", quantity=10.0, market_value=3000.0),
+    ]
+    exposure = compute_cross_account_exposure(positions)
+    assert len(exposure) == 1
+    assert exposure[0].symbol == "AAPL"
+    assert exposure[0].total_quantity == 150.0
+    assert exposure[0].total_market_value == 27750.0
+    assert exposure[0].account_ids == ["account_1", "account_2"]
+
+
+def test_compute_concentration_warnings_flags_positions_over_threshold() -> None:
+    positions = [
+        _position(symbol="AAPL", market_value=9000.0),
+        _position(symbol="MSFT", market_value=1000.0),
+    ]
+    weights = compute_position_weights(positions, total_market_value=10000.0)
+    warnings = compute_concentration_warnings(weights, threshold_percent=10.0)
+    assert len(warnings) == 1
+    assert warnings[0].symbol == "AAPL"
+    assert warnings[0].weight_percent == 90.0
+
+
+def test_compute_gain_loss_computes_from_average_price() -> None:
+    positions = [_position(quantity=100.0, average_price=150.0, market_value=18500.0)]
+    results, total = compute_gain_loss(positions)
+    assert results[0].cost_basis == 15000.0
+    assert results[0].unrealized_gain_loss_dollar == 3500.0
+    assert total == 3500.0
+
+
+def test_compute_gain_loss_missing_average_price_stays_none_not_estimated() -> None:
+    positions = [_position(average_price=None, market_value=18500.0)]
+    results, total = compute_gain_loss(positions)
+    assert results[0].cost_basis is None
+    assert results[0].unrealized_gain_loss_dollar is None
+    assert total is None
+
+
+def test_is_snapshot_stale_flags_data_older_than_24_hours() -> None:
+    taken_at = datetime(2026, 1, 1, tzinfo=UTC)
+    assert not is_snapshot_stale(taken_at, taken_at + timedelta(hours=1))
+    assert is_snapshot_stale(taken_at, taken_at + timedelta(hours=25))

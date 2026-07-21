@@ -5,6 +5,7 @@ import pytest
 from core.errors import ProviderUnavailableError
 from core.time import FakeClock
 from domains.portfolio.errors import (
+    PortfolioSnapshotNotFoundError,
     SchwabCredentialNotFoundError,
     SchwabReauthorizationRequiredError,
     SchwabTokenRefreshError,
@@ -13,6 +14,7 @@ from domains.portfolio.service import PortfolioService
 from infrastructure.secrets.encryption import SecretCipher
 from tests.unit.domains.portfolio.fakes import (
     FakeAuditRepository,
+    FakeComputedValueRecordRepository,
     FakePortfolioRepository,
     FakeSchwabCredentialRepository,
     FakeSchwabProvider,
@@ -40,6 +42,7 @@ def _service(
         FakeAuditRepository(),
         clock,
         "state-secret",
+        FakeComputedValueRecordRepository(),
     )
     return service, provider, portfolio_repo, credentials
 
@@ -223,3 +226,69 @@ async def test_sync_without_credential_raises_not_found() -> None:
     service, _, _, _ = _service()
     with pytest.raises(SchwabCredentialNotFoundError):
         await service.sync("never_connected")
+
+
+async def test_get_dashboard_without_a_sync_raises_snapshot_not_found() -> None:
+    service, _, _, _ = _service()
+    await _connect(service)
+    with pytest.raises(PortfolioSnapshotNotFoundError):
+        await service.get_dashboard("user_1")
+
+
+async def test_get_dashboard_computes_weights_gain_loss_and_provenance() -> None:
+    service, provider, _, _ = _service()
+    await _connect(service)
+    provider.account_numbers_response = [{"accountNumber": "87654321", "hashValue": "hash-abc"}]
+    provider.accounts_response = [
+        {
+            "securitiesAccount": {
+                "type": "INDIVIDUAL",
+                "accountNumber": "87654321",
+                "currentBalances": {"cashBalance": 5000.0, "liquidationValue": 23500.0},
+                "positions": [
+                    {
+                        "instrument": {"symbol": "AAPL", "assetType": "EQUITY"},
+                        "longQuantity": 100,
+                        "shortQuantity": 0,
+                        "marketValue": 18500.0,
+                        "averagePrice": 150.0,
+                    }
+                ],
+            }
+        }
+    ]
+    await service.sync("user_1")
+
+    dashboard = await service.get_dashboard("user_1")
+
+    assert dashboard.total_market_value == 23500.0
+    assert dashboard.reconciled is True
+    assert dashboard.position_weights[0].symbol == "AAPL"
+    assert dashboard.unrealized_gain_loss[0].unrealized_gain_loss_dollar == 3500.0
+    assert dashboard.total_unrealized_gain_loss_dollar == 3500.0
+    assert dashboard.sector_exposure[0].sector == "Unknown"
+    assert dashboard.computed_value_record_id
+    assert not dashboard.is_stale
+
+
+async def test_get_dashboard_flags_stale_data() -> None:
+    clock = FakeClock(datetime(2026, 1, 1, tzinfo=UTC))
+    service, provider, _, _ = _service(clock=clock)
+    await _connect(service)
+    provider.account_numbers_response = [{"accountNumber": "11111111", "hashValue": "hash-1"}]
+    provider.accounts_response = [
+        {
+            "securitiesAccount": {
+                "type": "INDIVIDUAL",
+                "accountNumber": "11111111",
+                "currentBalances": {"cashBalance": 100.0, "liquidationValue": 100.0},
+                "positions": [],
+            }
+        }
+    ]
+    await service.sync("user_1")
+
+    clock.set(datetime(2026, 1, 3, tzinfo=UTC))  # more than 24 hours later
+    dashboard = await service.get_dashboard("user_1")
+
+    assert dashboard.is_stale is True

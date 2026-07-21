@@ -118,6 +118,7 @@ class PortfolioRepository(Protocol):
     async def list_accounts(self, user_id: str) -> list[Account]: ...
     async def save_positions(self, positions: list[Position]) -> None: ...
     async def list_positions(self, user_id: str, account_id: str) -> list[Position]: ...
+    async def list_all_positions(self, user_id: str) -> list[Position]: ...
     async def save_balance(self, balance: AccountBalance) -> None: ...
     async def get_latest_balance(self, account_id: str) -> AccountBalance | None: ...
     async def save_snapshot(self, snapshot: PortfolioSnapshot) -> None: ...
@@ -272,6 +273,32 @@ class PostgresPortfolioRepository:
             select(PositionRow).where(
                 PositionRow.user_id == user_id, PositionRow.account_id == account_id
             )
+        )
+        return [
+            Position(
+                position_id=row.position_id,
+                account_id=row.account_id,
+                user_id=row.user_id,
+                symbol=row.symbol,
+                asset_type=AssetType(row.asset_type),
+                quantity=row.quantity,
+                average_price=row.average_price,
+                market_value=row.market_value,
+                current_price=row.current_price,
+                day_change_dollar=row.day_change_dollar,
+                day_change_percent=row.day_change_percent,
+                source_record_id=row.source_record_id,
+                synced_at=row.synced_at,
+            )
+            for row in result.scalars().all()
+        ]
+
+    async def list_all_positions(self, user_id: str) -> list[Position]:
+        """Every current position across every account — the money
+        dashboard's calculations (PROMPT.md Phase 13) operate cross-account,
+        unlike `list_positions` which is scoped to a single account."""
+        result = await self._session.execute(
+            select(PositionRow).where(PositionRow.user_id == user_id)
         )
         return [
             Position(

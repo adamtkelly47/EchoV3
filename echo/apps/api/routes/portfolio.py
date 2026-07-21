@@ -19,13 +19,20 @@ from apps.api.dependencies import get_db_session, get_portfolio_service
 from apps.api.schemas.portfolio import (
     AccountListResponse,
     AccountResponse,
+    AssetClassExposureResponse,
     CompleteAuthorizationRequest,
+    ConcentrationWarningResponse,
     ConnectResponse,
+    MoneyDashboardResponse,
+    PositionGainLossResponse,
+    PositionWeightResponse,
     PriceHistoryPointResponse,
     PriceHistoryResponse,
     QuoteListResponse,
     QuoteResponse,
+    SectorExposureResponse,
     SnapshotResponse,
+    SymbolExposureResponse,
 )
 from domains.portfolio.service import PortfolioService
 
@@ -105,6 +112,76 @@ async def latest_snapshot(
         reconciliation_diff=snapshot.reconciliation_diff,
         account_ids=snapshot.account_ids,
         warnings=snapshot.warnings,
+    )
+
+
+@router.get("/dashboard", response_model=MoneyDashboardResponse)
+async def dashboard(
+    user_id: str, portfolio: PortfolioService = Depends(get_portfolio_service)
+) -> MoneyDashboardResponse:
+    result = await portfolio.get_dashboard(user_id)
+    return MoneyDashboardResponse(
+        user_id=result.user_id,
+        generated_at=result.generated_at,
+        last_verified_sync_at=result.last_verified_sync_at,
+        is_stale=result.is_stale,
+        total_market_value=result.total_market_value,
+        reconciled=result.reconciled,
+        position_weights=[
+            PositionWeightResponse(
+                symbol=w.symbol,
+                account_id=w.account_id,
+                market_value=w.market_value,
+                weight_percent=w.weight_percent,
+            )
+            for w in result.position_weights
+        ],
+        asset_class_exposure=[
+            AssetClassExposureResponse(
+                asset_type=e.asset_type.value,
+                market_value=e.market_value,
+                weight_percent=e.weight_percent,
+            )
+            for e in result.asset_class_exposure
+        ],
+        sector_exposure=[
+            SectorExposureResponse(
+                sector=s.sector, market_value=s.market_value, weight_percent=s.weight_percent
+            )
+            for s in result.sector_exposure
+        ],
+        cross_account_exposure=[
+            SymbolExposureResponse(
+                symbol=x.symbol,
+                total_quantity=x.total_quantity,
+                total_market_value=x.total_market_value,
+                account_ids=x.account_ids,
+            )
+            for x in result.cross_account_exposure
+        ],
+        concentration_warnings=[
+            ConcentrationWarningResponse(
+                symbol=c.symbol,
+                weight_percent=c.weight_percent,
+                threshold_percent=c.threshold_percent,
+            )
+            for c in result.concentration_warnings
+        ],
+        unrealized_gain_loss=[
+            PositionGainLossResponse(
+                symbol=g.symbol,
+                account_id=g.account_id,
+                quantity=g.quantity,
+                cost_basis=g.cost_basis,
+                market_value=g.market_value,
+                unrealized_gain_loss_dollar=g.unrealized_gain_loss_dollar,
+                unrealized_gain_loss_percent=g.unrealized_gain_loss_percent,
+            )
+            for g in result.unrealized_gain_loss
+        ],
+        total_unrealized_gain_loss_dollar=result.total_unrealized_gain_loss_dollar,
+        warnings=result.warnings,
+        computed_value_record_id=result.computed_value_record_id,
     )
 
 

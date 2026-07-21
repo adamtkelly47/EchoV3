@@ -119,3 +119,83 @@ class PriceHistoryPoint(BaseModel):
     low: float
     close: float
     volume: int
+
+
+class PositionWeight(BaseModel):
+    symbol: str
+    account_id: str
+    market_value: float
+    weight_percent: float
+
+
+class AssetClassExposure(BaseModel):
+    asset_type: AssetType
+    market_value: float
+    weight_percent: float
+
+
+class SectorExposure(BaseModel):
+    """`sector` is always "Unknown" until a real sector data source exists.
+    Docs/DOMAIN_OWNERSHIP.md assigns "Company fundamentals" (which sector
+    classification is part of) to the Research domain, not Portfolio, and
+    Research isn't built until PROMPT.md Phase 16 — so this is deliberately
+    a single "Unknown" bucket for now rather than a fabricated mapping
+    (CONSTITUTION.md: Verified Truth)."""
+
+    sector: str
+    market_value: float
+    weight_percent: float
+
+
+class SymbolExposure(BaseModel):
+    """Cross-account exposure: the same symbol held in more than one
+    account, aggregated (PROMPT.md Phase 13 implement item 3)."""
+
+    symbol: str
+    total_quantity: float
+    total_market_value: float
+    account_ids: list[str]
+
+
+class ConcentrationWarning(BaseModel):
+    symbol: str
+    weight_percent: float
+    threshold_percent: float
+
+
+class PositionGainLoss(BaseModel):
+    """`cost_basis`/`unrealized_gain_loss_*` stay `None` when Schwab never
+    reported `average_price` for this position — never estimated to "fill
+    in" a gain/loss figure (PROMPT.md Phase 13 verification item 4)."""
+
+    symbol: str
+    account_id: str
+    quantity: float
+    cost_basis: float | None
+    market_value: float | None
+    unrealized_gain_loss_dollar: float | None
+    unrealized_gain_loss_percent: float | None
+
+
+class MoneyDashboard(BaseModel):
+    """PROMPT.md Phase 13 implement item 10 / Section 22.2 ("Money" section
+    of the eventual unified dashboard, Phase 22). Built entirely from the
+    latest already-synced, reconciled snapshot — never triggers a live
+    Schwab call (deterministic analysis of verified data, not a fresh
+    read)."""
+
+    user_id: str
+    generated_at: datetime
+    last_verified_sync_at: datetime
+    is_stale: bool
+    total_market_value: float
+    reconciled: bool
+    position_weights: list[PositionWeight]
+    asset_class_exposure: list[AssetClassExposure]
+    sector_exposure: list[SectorExposure]
+    cross_account_exposure: list[SymbolExposure]
+    concentration_warnings: list[ConcentrationWarning]
+    unrealized_gain_loss: list[PositionGainLoss]
+    total_unrealized_gain_loss_dollar: float | None
+    warnings: list[str] = Field(default_factory=list)
+    computed_value_record_id: str

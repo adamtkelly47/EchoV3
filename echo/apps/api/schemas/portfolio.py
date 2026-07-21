@@ -73,3 +73,63 @@ class PriceHistoryPointResponse(BaseModel):
 class PriceHistoryResponse(BaseModel):
     symbol: str
     points: list[PriceHistoryPointResponse]
+
+
+class PositionWeightResponse(BaseModel):
+    symbol: str
+    account_id: str
+    market_value: float
+    weight_percent: float
+
+
+class AssetClassExposureResponse(BaseModel):
+    asset_type: str
+    market_value: float
+    weight_percent: float
+
+
+class SectorExposureResponse(BaseModel):
+    sector: str
+    market_value: float
+    weight_percent: float
+
+
+class SymbolExposureResponse(BaseModel):
+    symbol: str
+    total_quantity: float
+    total_market_value: float
+    account_ids: list[str]
+
+
+class ConcentrationWarningResponse(BaseModel):
+    symbol: str
+    weight_percent: float
+    threshold_percent: float
+
+
+class PositionGainLossResponse(BaseModel):
+    symbol: str
+    account_id: str
+    quantity: float
+    cost_basis: float | None
+    market_value: float | None
+    unrealized_gain_loss_dollar: float | None
+    unrealized_gain_loss_percent: float | None
+
+
+class MoneyDashboardResponse(BaseModel):
+    user_id: str
+    generated_at: datetime
+    last_verified_sync_at: datetime
+    is_stale: bool
+    total_market_value: float
+    reconciled: bool
+    position_weights: list[PositionWeightResponse]
+    asset_class_exposure: list[AssetClassExposureResponse]
+    sector_exposure: list[SectorExposureResponse]
+    cross_account_exposure: list[SymbolExposureResponse]
+    concentration_warnings: list[ConcentrationWarningResponse]
+    unrealized_gain_loss: list[PositionGainLossResponse]
+    total_unrealized_gain_loss_dollar: float | None
+    warnings: list[str]
+    computed_value_record_id: str

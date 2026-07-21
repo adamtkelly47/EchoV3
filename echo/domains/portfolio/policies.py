@@ -32,17 +32,51 @@ from domains.portfolio.models import AssetType
 from domains.portfolio.schemas import (
     Account,
     AccountBalance,
+    AssetClassExposure,
+    ConcentrationWarning,
     PortfolioSnapshot,
     Position,
+    PositionGainLoss,
+    PositionWeight,
     PriceHistoryPoint,
     Quote,
     SchwabCredential,
+    SectorExposure,
+    SymbolExposure,
 )
 
 # A rounding-error tolerance, not a "close enough" fudge on real
 # discrepancies (PROMPT.md Phase 12 verification 1: "account totals
 # reconcile") — cents-level floating point noise, nothing more.
 _RECONCILIATION_TOLERANCE = 0.01
+
+# Rounding policy (PROMPT.md Phase 13 verification item 3, "rounding rules
+# are documented"): dollar amounts round to whole cents, percentages round
+# to hundredths of a percent. Consistent with the float-based money
+# arithmetic already established throughout this module (no Decimal
+# conversion — introducing one here for calculations only, while every
+# other money field in this codebase stays float, would be an inconsistent
+# half-migration rather than a real improvement).
+_MONEY_DECIMALS = 2
+_PERCENT_DECIMALS = 2
+
+# A generic concentration threshold — this is Portfolio's own default
+# business rule (Docs/DOMAIN_OWNERSHIP.md: Portfolio owns "concentration
+# limits"), used until an Investment Policy Statement (PROMPT.md Phase 14)
+# can supply a user-specific one.
+_DEFAULT_CONCENTRATION_THRESHOLD_PERCENT = 10.0
+
+# Sector classification is Research-domain fundamental data
+# (Docs/DOMAIN_OWNERSHIP.md: Research owns "Fundamental Data"; Portfolio
+# does not), and Research isn't built until PROMPT.md Phase 16 — so every
+# position is reported under a single "Unknown" sector bucket for now
+# rather than a fabricated mapping.
+_UNKNOWN_SECTOR = "Unknown"
+
+# PROMPT.md Phase 13 verification item 5: "dashboard clearly shows last
+# verified sync time" — data older than this is flagged stale, not
+# silently presented as current.
+_STALENESS_THRESHOLD = timedelta(hours=24)
 
 # Schwab's `instrument.assetType` is a broad category — verified live
 # (Docs/DECISION_LOG.md's Phase 12 entry) that ETFs report
@@ -242,6 +276,155 @@ def build_snapshot(
         account_ids=account_ids,
         warnings=extra_warnings,
     )
+
+
+def compute_position_weights(
+    positions: list[Position], total_market_value: float
+) -> list[PositionWeight]:
+    """Positions missing `market_value` are excluded, not treated as zero
+    (PROMPT.md Phase 13 verification 4: never estimate missing data)."""
+    weights = []
+    for p in positions:
+        if p.market_value is None:
+            continue
+        weight_percent = (
+            round(p.market_value / total_market_value * 100, _PERCENT_DECIMALS)
+            if total_market_value
+            else 0.0
+        )
+        weights.append(
+            PositionWeight(
+                symbol=p.symbol,
+                account_id=p.account_id,
+                market_value=round(p.market_value, _MONEY_DECIMALS),
+                weight_percent=weight_percent,
+            )
+        )
+    return weights
+
+
+def compute_asset_class_exposure(
+    positions: list[Position], total_market_value: float
+) -> list[AssetClassExposure]:
+    totals: dict[AssetType, float] = {}
+    for p in positions:
+        if p.market_value is None:
+            continue
+        totals[p.asset_type] = totals.get(p.asset_type, 0.0) + p.market_value
+    return [
+        AssetClassExposure(
+            asset_type=asset_type,
+            market_value=round(value, _MONEY_DECIMALS),
+            weight_percent=(
+                round(value / total_market_value * 100, _PERCENT_DECIMALS)
+                if total_market_value
+                else 0.0
+            ),
+        )
+        for asset_type, value in totals.items()
+    ]
+
+
+def compute_sector_exposure(total_market_value: float) -> list[SectorExposure]:
+    """Every position is reported under a single "Unknown" bucket — Portfolio
+    does not own sector classification (Docs/DOMAIN_OWNERSHIP.md assigns
+    that to Research's "Fundamental Data"/"Industry Data"), and the Research
+    domain isn't built until PROMPT.md Phase 16. An honest single bucket,
+    not a fabricated per-position mapping."""
+    if total_market_value <= 0:
+        return []
+    return [
+        SectorExposure(
+            sector=_UNKNOWN_SECTOR,
+            market_value=round(total_market_value, _MONEY_DECIMALS),
+            weight_percent=100.0,
+        )
+    ]
+
+
+def compute_cross_account_exposure(positions: list[Position]) -> list[SymbolExposure]:
+    """PROMPT.md Phase 13 implement item 3: the same symbol held in more
+    than one account, aggregated. Symbols held in only one account are not
+    "exposure" in the cross-account sense and are omitted here."""
+    by_symbol: dict[str, list[Position]] = {}
+    for p in positions:
+        by_symbol.setdefault(p.symbol, []).append(p)
+    result = []
+    for symbol, group in sorted(by_symbol.items()):
+        account_ids = sorted({p.account_id for p in group})
+        if len(account_ids) < 2:
+            continue
+        result.append(
+            SymbolExposure(
+                symbol=symbol,
+                total_quantity=sum(p.quantity for p in group),
+                total_market_value=round(
+                    sum(p.market_value or 0.0 for p in group), _MONEY_DECIMALS
+                ),
+                account_ids=account_ids,
+            )
+        )
+    return result
+
+
+def compute_concentration_warnings(
+    weights: list[PositionWeight],
+    threshold_percent: float = _DEFAULT_CONCENTRATION_THRESHOLD_PERCENT,
+) -> list[ConcentrationWarning]:
+    return [
+        ConcentrationWarning(
+            symbol=w.symbol, weight_percent=w.weight_percent, threshold_percent=threshold_percent
+        )
+        for w in weights
+        if w.weight_percent > threshold_percent
+    ]
+
+
+def compute_gain_loss(positions: list[Position]) -> tuple[list[PositionGainLoss], float | None]:
+    """`cost_basis` stays `None` when Schwab never reported `average_price`
+    for this position — never estimated to "fill in" a gain/loss figure
+    (PROMPT.md Phase 13 verification 4)."""
+    results = []
+    total: float | None = None
+    for p in positions:
+        cost_basis = (
+            round(p.average_price * p.quantity, _MONEY_DECIMALS)
+            if p.average_price is not None
+            else None
+        )
+        gain_dollar = (
+            round(p.market_value - cost_basis, _MONEY_DECIMALS)
+            if cost_basis is not None and p.market_value is not None
+            else None
+        )
+        gain_percent = (
+            round(gain_dollar / cost_basis * 100, _PERCENT_DECIMALS)
+            if gain_dollar is not None and cost_basis
+            else None
+        )
+        results.append(
+            PositionGainLoss(
+                symbol=p.symbol,
+                account_id=p.account_id,
+                quantity=p.quantity,
+                cost_basis=cost_basis,
+                market_value=p.market_value,
+                unrealized_gain_loss_dollar=gain_dollar,
+                unrealized_gain_loss_percent=gain_percent,
+            )
+        )
+        if gain_dollar is not None:
+            total = (total or 0.0) + gain_dollar
+    if total is not None:
+        total = round(total, _MONEY_DECIMALS)
+    return results, total
+
+
+def is_snapshot_stale(taken_at: datetime, now: datetime) -> bool:
+    """PROMPT.md Phase 13 verification 5: "dashboard clearly shows last
+    verified sync time" — data older than `_STALENESS_THRESHOLD` is flagged,
+    not silently presented as current."""
+    return now - taken_at > _STALENESS_THRESHOLD
 
 
 def _sign(payload: str, secret: str) -> str:

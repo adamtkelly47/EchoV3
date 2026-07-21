@@ -22,18 +22,26 @@ from typing import Any, Protocol
 
 from core.errors import EchoError
 from core.identifiers import new_id
-from core.provenance import SourceRecord, ValidationStatus
+from core.provenance import ComputedValueRecord, SourceRecord, ValidationStatus
 from core.time import Clock
 from domains.portfolio.errors import (
+    PortfolioSnapshotNotFoundError,
     SchwabCredentialNotFoundError,
     SchwabReauthorizationRequiredError,
     SchwabTokenRefreshError,
 )
 from domains.portfolio.policies import (
     build_snapshot,
+    compute_asset_class_exposure,
+    compute_concentration_warnings,
+    compute_cross_account_exposure,
+    compute_gain_loss,
+    compute_position_weights,
+    compute_sector_exposure,
     extract_code_from_redirect,
     generate_oauth_state,
     is_refresh_token_expired,
+    is_snapshot_stale,
     needs_refresh,
     parse_account,
     parse_balance,
@@ -46,13 +54,17 @@ from domains.portfolio.policies import (
 from domains.portfolio.repository import PortfolioRepository, SchwabCredentialRepository
 from domains.portfolio.schemas import (
     Account,
+    MoneyDashboard,
     PortfolioSnapshot,
     PriceHistoryPoint,
     Quote,
     SchwabCredential,
 )
 from infrastructure.database.repositories.audit import AuditRepository
-from infrastructure.database.repositories.provenance import SourceRecordRepository
+from infrastructure.database.repositories.provenance import (
+    ComputedValueRecordRepository,
+    SourceRecordRepository,
+)
 from infrastructure.secrets.encryption import SecretCipher
 
 
@@ -77,6 +89,7 @@ class PortfolioService:
         audit: AuditRepository,
         clock: Clock,
         state_secret: str,
+        computed_values: ComputedValueRecordRepository,
     ) -> None:
         self._credentials = credentials
         self._portfolio = portfolio
@@ -86,6 +99,7 @@ class PortfolioService:
         self._audit = audit
         self._clock = clock
         self._state_secret = state_secret
+        self._computed_values = computed_values
 
     def start_authorization(self, user_id: str) -> str:
         state = generate_oauth_state(user_id, new_id(), self._clock.now_utc(), self._state_secret)
@@ -193,6 +207,75 @@ class PortfolioService:
 
     async def get_accounts(self, user_id: str) -> list[Account]:
         return await self._portfolio.list_accounts(user_id)
+
+    async def get_dashboard(self, user_id: str) -> MoneyDashboard:
+        """PROMPT.md Phase 13: turns the latest already-synced, reconciled
+        snapshot into deterministic analysis. Never triggers a live Schwab
+        call itself — every displayed number traces back to that snapshot
+        and the position rows it was built from (verification item 1)."""
+        snapshot = await self._portfolio.get_latest_snapshot(user_id)
+        if snapshot is None:
+            raise PortfolioSnapshotNotFoundError(
+                f"no synced portfolio snapshot for user {user_id!r} "
+                "— run POST /portfolio/sync first"
+            )
+        positions = await self._portfolio.list_all_positions(user_id)
+        now = self._clock.now_utc()
+
+        weights = compute_position_weights(positions, snapshot.total_market_value)
+        asset_class_exposure = compute_asset_class_exposure(positions, snapshot.total_market_value)
+        sector_exposure = compute_sector_exposure(snapshot.total_market_value)
+        cross_account_exposure = compute_cross_account_exposure(positions)
+        concentration_warnings = compute_concentration_warnings(weights)
+        gain_loss, total_gain_loss = compute_gain_loss(positions)
+
+        warnings = list(snapshot.warnings)
+        missing_cost_basis = sum(1 for p in positions if p.average_price is None)
+        if missing_cost_basis:
+            warnings.append(
+                f"{missing_cost_basis} position(s) missing cost basis "
+                "— excluded from unrealized gain/loss, not estimated"
+            )
+        warnings.append(
+            "sector exposure is a single 'Unknown' bucket — real sector classification "
+            "requires the Research domain (PROMPT.md Phase 16+), not yet available"
+        )
+
+        input_record_ids = sorted({snapshot.snapshot_id, *(p.source_record_id for p in positions)})
+        record = ComputedValueRecord(
+            calculation_name="portfolio.money_dashboard",
+            calculation_version="1",
+            input_record_ids=input_record_ids,
+            executed_at=now,
+            output={
+                "total_market_value": snapshot.total_market_value,
+                "position_count": len(positions),
+            },
+            rounding_policy=(
+                "dollar amounts rounded to 2 decimal places; percentages rounded to 2 "
+                "decimal places (hundredths of a percent)"
+            ),
+            validation_result=ValidationStatus.PASSED,
+        )
+        await self._computed_values.save(record)
+
+        return MoneyDashboard(
+            user_id=user_id,
+            generated_at=now,
+            last_verified_sync_at=snapshot.taken_at,
+            is_stale=is_snapshot_stale(snapshot.taken_at, now),
+            total_market_value=snapshot.total_market_value,
+            reconciled=snapshot.reconciled,
+            position_weights=weights,
+            asset_class_exposure=asset_class_exposure,
+            sector_exposure=sector_exposure,
+            cross_account_exposure=cross_account_exposure,
+            concentration_warnings=concentration_warnings,
+            unrealized_gain_loss=gain_loss,
+            total_unrealized_gain_loss_dollar=total_gain_loss,
+            warnings=warnings,
+            computed_value_record_id=record.record_id,
+        )
 
     async def get_latest_snapshot(self, user_id: str) -> PortfolioSnapshot | None:
         return await self._portfolio.get_latest_snapshot(user_id)

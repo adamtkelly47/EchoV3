@@ -94,6 +94,42 @@ async def test_positions_save_upserts_by_account_and_symbol(db_session: AsyncSes
     assert positions[0].quantity == 150
 
 
+async def test_list_all_positions_spans_every_account(db_session: AsyncSession) -> None:
+    """The Phase 13 money dashboard's calculations operate cross-account
+    (PROMPT.md Phase 13 implement item 3: "cross account exposure") — unlike
+    `list_positions`, which is scoped to a single account_id."""
+    repo = PostgresPortfolioRepository(db_session)
+    await repo.save_positions(
+        [
+            Position(
+                account_id="account_1",
+                user_id="user_1",
+                symbol="AAPL",
+                asset_type=AssetType.EQUITY,
+                quantity=100,
+                market_value=18500.0,
+                source_record_id="source_1",
+                synced_at=datetime(2026, 1, 1, tzinfo=UTC),
+            ),
+            Position(
+                account_id="account_2",
+                user_id="user_1",
+                symbol="MSFT",
+                asset_type=AssetType.EQUITY,
+                quantity=10,
+                market_value=3500.0,
+                source_record_id="source_1",
+                synced_at=datetime(2026, 1, 1, tzinfo=UTC),
+            ),
+        ]
+    )
+
+    positions = await repo.list_all_positions("user_1")
+
+    assert {p.symbol for p in positions} == {"AAPL", "MSFT"}
+    assert {p.account_id for p in positions} == {"account_1", "account_2"}
+
+
 async def test_balance_history_returns_latest(db_session: AsyncSession) -> None:
     repo = PostgresPortfolioRepository(db_session)
     first = AccountBalance(
