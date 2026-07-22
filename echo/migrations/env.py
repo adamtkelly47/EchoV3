@@ -37,6 +37,15 @@ from domains.portfolio.repository import (  # noqa: F401 — registers tables on
     SchwabCredentialRow,
     SchwabRawResponseRow,
 )
+from domains.projects.repository import (  # noqa: F401 — registers tables on Base.metadata
+    BlockerRow,
+    DecisionRow,
+    GoalRow,
+    MilestoneRow,
+    ProjectRow,
+    StatusUpdateRow,
+    TaskRow,
+)
 from domains.research.repository import (  # noqa: F401 — registers tables on Base.metadata
     CommitteeAssignmentRow,
     InsiderTransactionRow,

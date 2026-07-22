@@ -16,6 +16,7 @@ from domains.conversation.service import ConversationService
 from domains.portfolio.models import AssetType
 from domains.portfolio.schemas import AccountBalance, PortfolioSnapshot, Position
 from domains.portfolio.service import PortfolioService
+from domains.projects.service import ProjectService
 from infrastructure.secrets.encryption import SecretCipher
 from tests.unit.domains.approvals.fakes import (
     FakeApprovalDecisionRepository,
@@ -41,6 +42,8 @@ from tests.unit.domains.portfolio.fakes import (
 from tests.unit.domains.portfolio.fakes import (
     FakeSourceRecordRepository as FakePortfolioSourceRecordRepository,
 )
+from tests.unit.domains.projects.fakes import FakeAuditRepository as FakeProjectsAuditRepository
+from tests.unit.domains.projects.fakes import FakeProjectRepository
 
 _FERNET_KEY = "qgiLfl_Ze3gvcItoR_vV0K0D0IWKj2I8gA_U9Rq95EY="
 
@@ -67,6 +70,7 @@ def _query_service(
     FakeCalendarCredentialRepository,
     ApprovalService,
     ConversationService,
+    ProjectService,
 ]:
     portfolio_repo = FakePortfolioRepository()
     schwab_credentials = FakeSchwabCredentialRepository()
@@ -100,8 +104,9 @@ def _query_service(
         clock,
     )
     conversations = ConversationService(FakeConversationRepository(), clock)
+    projects = ProjectService(FakeProjectRepository(), FakeProjectsAuditRepository(), clock)
     dashboard = DashboardQueryService(
-        portfolio, calendar, approvals, conversations, clock, _settings()
+        portfolio, calendar, approvals, conversations, projects, clock, _settings()
     )
     return (
         dashboard,
@@ -112,6 +117,7 @@ def _query_service(
         calendar_credentials,
         approvals,
         conversations,
+        projects,
     )
 
 
@@ -127,7 +133,7 @@ async def test_today_card_not_connected_when_no_calendar_credential() -> None:
 
 async def test_today_card_ok_when_calendar_connected() -> None:
     clock = FakeClock(datetime(2026, 1, 1, tzinfo=UTC))
-    dashboard, _, _, _, calendar, _, _, _ = _query_service(clock)
+    dashboard, _, _, _, calendar, _, _, _, _ = _query_service(clock)
     await calendar.connect("user_1", "auth-code-123")
 
     view = await dashboard.build("user_1")
@@ -148,7 +154,7 @@ async def test_money_card_not_connected_when_no_schwab_credential() -> None:
 
 async def test_money_card_no_data_when_connected_but_never_synced() -> None:
     clock = FakeClock(datetime(2026, 1, 1, tzinfo=UTC))
-    dashboard, portfolio, _, _, _, _, _, _ = _query_service(clock)
+    dashboard, portfolio, _, _, _, _, _, _, _ = _query_service(clock)
     state = portfolio.start_authorization("user_1")
     state_value = state.split("state=", 1)[1]
     await portfolio.complete_authorization("auth-code", state_value)
@@ -164,7 +170,7 @@ async def test_money_card_ok_with_real_synced_snapshot() -> None:
     backend APIs — the money card's numbers are the real
     `PortfolioService.get_dashboard` computation, not re-derived here."""
     clock = FakeClock(datetime(2026, 1, 1, tzinfo=UTC))
-    dashboard, portfolio, portfolio_repo, _, _, _, _, _ = _query_service(clock)
+    dashboard, portfolio, portfolio_repo, _, _, _, _, _, _ = _query_service(clock)
     state = portfolio.start_authorization("user_1")
     state_value = state.split("state=", 1)[1]
     await portfolio.complete_authorization("auth-code", state_value)
@@ -209,7 +215,7 @@ async def test_money_card_ok_with_real_synced_snapshot() -> None:
 
 async def test_approval_inbox_reflects_real_pending_proposal() -> None:
     clock = FakeClock(datetime(2026, 1, 1, tzinfo=UTC))
-    dashboard, _, _, _, _, _, approvals, _ = _query_service(clock)
+    dashboard, _, _, _, _, _, approvals, _, _ = _query_service(clock)
     proposal = await approvals.propose(
         user_id="user_1",
         action_type="calendar.create_event",
@@ -233,20 +239,55 @@ async def test_approval_inbox_reflects_real_pending_proposal() -> None:
     assert any("1 action(s) awaiting your approval" in i.description for i in view.attention.items)
 
 
-async def test_projects_card_is_honestly_not_available() -> None:
-    """PROMPT.md Phase 22 implement item 4: no Projects domain exists yet
-    (Phase 23) — this must never be silently faked as empty-but-ok."""
+async def test_projects_card_no_data_for_new_user() -> None:
     clock = FakeClock(datetime(2026, 1, 1, tzinfo=UTC))
     dashboard, *_ = _query_service(clock)
 
     view = await dashboard.build("user_1")
 
-    assert view.projects.meta.status == "not_available"
+    assert view.projects.meta.status == "no_data"
+    assert view.projects.projects == []
+
+
+async def test_projects_card_reflects_real_project_task_and_blocker_counts() -> None:
+    """PROMPT.md Phase 23 implement item 10: "dashboard summary" —
+    verification 1's own "based on stored facts" discipline applies here
+    too: the numbers shown are `ProjectService.get_project_status_summary`'s
+    real computation, not re-derived in the dashboard layer."""
+    clock = FakeClock(datetime(2026, 1, 1, tzinfo=UTC))
+    dashboard, _, _, _, _, _, _, _, projects = _query_service(clock)
+    project = await projects.create_project("user_1", "Kitchen remodel")
+    task = await projects.propose_task(project.project_id, "Order cabinets")
+    await projects.commit_task(task.task_id)
+    await projects.raise_blocker(project.project_id, "Waiting on permit")
+
+    view = await dashboard.build("user_1")
+
+    assert view.projects.meta.status == "ok"
+    assert len(view.projects.projects) == 1
+    entry = view.projects.projects[0]
+    assert entry.name == "Kitchen remodel"
+    assert entry.committed_tasks == 1
+    assert entry.open_blockers == 1
+
+
+async def test_projects_card_excludes_archived_projects() -> None:
+    from domains.projects.models import ProjectStatus
+
+    clock = FakeClock(datetime(2026, 1, 1, tzinfo=UTC))
+    dashboard, _, _, _, _, _, _, _, projects = _query_service(clock)
+    project = await projects.create_project("user_1", "Old project")
+    await projects.update_project_status(project.project_id, ProjectStatus.ARCHIVED)
+
+    view = await dashboard.build("user_1")
+
+    assert view.projects.meta.status == "no_data"
+    assert view.projects.projects == []
 
 
 async def test_conversation_card_reflects_recent_sessions() -> None:
     clock = FakeClock(datetime(2026, 1, 1, tzinfo=UTC))
-    dashboard, _, _, _, _, _, _, conversations = _query_service(clock)
+    dashboard, _, _, _, _, _, _, conversations, _ = _query_service(clock)
     session = await conversations.start_session("user_1")
 
     view = await dashboard.build("user_1")
@@ -299,11 +340,13 @@ async def test_integration_status_reflects_real_settings_and_credentials() -> No
         clock,
     )
     conversations = ConversationService(FakeConversationRepository(), clock)
+    projects = ProjectService(FakeProjectRepository(), FakeProjectsAuditRepository(), clock)
     dashboard = DashboardQueryService(
         portfolio,
         calendar,
         approvals,
         conversations,
+        projects,
         clock,
         _settings(finnhub_api_key="real-key", anthropic_api_key="sk-real"),
     )

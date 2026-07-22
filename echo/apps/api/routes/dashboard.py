@@ -37,6 +37,7 @@ from apps.api.schemas.dashboard import (
     IntegrationStatusCardResponse,
     MoneyCardResponse,
     ProjectsCardResponse,
+    ProjectSummaryEntryResponse,
     RecentSessionResponse,
     TodayCardResponse,
 )
@@ -168,7 +169,21 @@ def _to_attention_response(card: AttentionCard) -> AttentionCardResponse:
 
 
 def _to_projects_response(card: ProjectsCard) -> ProjectsCardResponse:
-    return ProjectsCardResponse(meta=_to_meta_response(card.meta))
+    return ProjectsCardResponse(
+        meta=_to_meta_response(card.meta),
+        projects=[
+            ProjectSummaryEntryResponse(
+                project_id=p.project_id,
+                name=p.name,
+                status=p.status,
+                committed_tasks=p.committed_tasks,
+                done_tasks=p.done_tasks,
+                total_tasks=p.total_tasks,
+                open_blockers=p.open_blockers,
+            )
+            for p in card.projects
+        ],
+    )
 
 
 def _to_conversation_response(card: ConversationCard) -> ConversationCardResponse:

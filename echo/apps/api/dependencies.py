@@ -22,6 +22,7 @@ from application.orchestrators.conversation import ConversationOrchestrator
 from application.orchestrators.insider_intelligence import InsiderIntelligenceOrchestrator
 from application.orchestrators.memory_extraction import MemoryExtractionOrchestrator
 from application.orchestrators.news_intelligence import NewsIntelligenceOrchestrator
+from application.orchestrators.project_memory import ProjectMemoryOrchestrator
 from application.portfolio_provider_factory import build_schwab_provider
 from application.queries.dashboard_query import DashboardQueryService
 from application.research_provider_factory import (
@@ -55,6 +56,8 @@ from domains.portfolio.repository import (
     PostgresSchwabCredentialRepository,
 )
 from domains.portfolio.service import PortfolioProviderPort, PortfolioService
+from domains.projects.repository import PostgresProjectRepository
+from domains.projects.service import ProjectService
 from domains.research.repository import PostgresResearchRepository
 from domains.research.service import (
     Form4ProviderPort,
@@ -261,12 +264,28 @@ def get_insider_intelligence_orchestrator(
     return InsiderIntelligenceOrchestrator(research, gateway)
 
 
+def get_project_service(
+    session: AsyncSession = Depends(get_db_session),
+) -> ProjectService:
+    return ProjectService(
+        PostgresProjectRepository(session), PostgresAuditRepository(session), SystemClock()
+    )
+
+
+def get_project_memory_orchestrator(
+    projects: ProjectService = Depends(get_project_service),
+    memory: MemoryService = Depends(get_memory_service),
+) -> ProjectMemoryOrchestrator:
+    return ProjectMemoryOrchestrator(projects, memory)
+
+
 def get_dashboard_query_service(
     portfolio: PortfolioService = Depends(get_portfolio_service),
     calendar: CalendarService = Depends(get_calendar_service),
     approvals: ApprovalService = Depends(get_approval_service),
     conversations: ConversationService = Depends(get_conversation_service),
+    projects: ProjectService = Depends(get_project_service),
 ) -> DashboardQueryService:
     return DashboardQueryService(
-        portfolio, calendar, approvals, conversations, SystemClock(), get_settings()
+        portfolio, calendar, approvals, conversations, projects, SystemClock(), get_settings()
     )

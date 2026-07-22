@@ -47,8 +47,19 @@ class AttentionCardResponse(BaseModel):
     items: list[AttentionItemResponse]
 
 
+class ProjectSummaryEntryResponse(BaseModel):
+    project_id: str
+    name: str
+    status: str
+    committed_tasks: int
+    done_tasks: int
+    total_tasks: int
+    open_blockers: int
+
+
 class ProjectsCardResponse(BaseModel):
     meta: CardMetaResponse
+    projects: list[ProjectSummaryEntryResponse]
 
 
 class RecentSessionResponse(BaseModel):

@@ -9,10 +9,11 @@ simultaneously"), the same reason `NewsIntelligenceOrchestrator` and
 `CalendarWriteOrchestrator` exist rather than wiring multiple domain
 services directly into a route.
 
-The "Projects" card (PROMPT.md Phase 22 implement item 4) is deliberately
-`not_available` — no Projects domain exists yet (that's Phase 23). An
-honest, static placeholder, not a fabricated empty list pretending the
-domain was queried.
+The "Projects" card (PROMPT.md Phase 22 implement item 4, Phase 23
+implement item 10: "dashboard summary") reads real `ProjectService` data
+as of Phase 23 — before that phase, no Projects domain existed at all, and
+the card was a deliberately honest `not_available` placeholder rather than
+a fabricated empty list pretending the domain was queried.
 
 Every card carries its own `CardMeta` (`status` + `as_of`) — PROMPT.md
 Phase 22 verification 2: "every card shows freshness or status." A domain
@@ -40,6 +41,8 @@ from domains.conversation.schemas import ConversationSession
 from domains.conversation.service import ConversationService
 from domains.portfolio.schemas import MoneyDashboard
 from domains.portfolio.service import PortfolioService
+from domains.projects.models import ProjectStatus
+from domains.projects.service import ProjectService
 
 CardStatus = Literal["ok", "not_connected", "no_data", "not_available"]
 
@@ -70,8 +73,19 @@ class AttentionCard(BaseModel):
     items: list[AttentionItem]
 
 
+class ProjectSummaryEntry(BaseModel):
+    project_id: str
+    name: str
+    status: str
+    committed_tasks: int
+    done_tasks: int
+    total_tasks: int
+    open_blockers: int
+
+
 class ProjectsCard(BaseModel):
     meta: CardMeta
+    projects: list[ProjectSummaryEntry]
 
 
 class ConversationCard(BaseModel):
@@ -114,6 +128,7 @@ class DashboardQueryService:
         calendar: CalendarService,
         approvals: ApprovalService,
         conversations: ConversationService,
+        projects: ProjectService,
         clock: Clock,
         settings: Settings,
     ) -> None:
@@ -121,6 +136,7 @@ class DashboardQueryService:
         self._calendar = calendar
         self._approvals = approvals
         self._conversations = conversations
+        self._projects = projects
         self._clock = clock
         self._settings = settings
 
@@ -134,13 +150,7 @@ class DashboardQueryService:
             today=await self._build_today(user_id, now),
             money=money,
             attention=await self._build_attention(user_id, now, approval_inbox),
-            projects=ProjectsCard(
-                meta=CardMeta(
-                    status="not_available",
-                    as_of=None,
-                    detail="Projects domain not yet built (PROMPT.md Phase 23)",
-                )
-            ),
+            projects=await self._build_projects(user_id, now),
             conversation=await self._build_conversation(user_id),
             integration_status=await self._build_integration_status(user_id, now),
             approval_inbox=approval_inbox,
@@ -210,6 +220,33 @@ class DashboardQueryService:
                 for breach in compliance.breaches
             )
         return AttentionCard(meta=CardMeta(status="ok", as_of=now), items=items)
+
+    async def _build_projects(self, user_id: str, now: datetime) -> ProjectsCard:
+        """PROMPT.md Phase 23 implement item 10: "dashboard summary." Only
+        non-archived projects are surfaced — an archived project is
+        deliberately no longer part of the active picture. Each entry's
+        task/blocker counts come from `ProjectService.get_project_status_
+        summary`'s own real, stored-fact computation (Phase 23 verification
+        1), never re-derived here."""
+        all_projects = await self._projects.list_projects_for_user(user_id)
+        active = [p for p in all_projects if p.status != ProjectStatus.ARCHIVED]
+        if not active:
+            return ProjectsCard(meta=CardMeta(status="no_data", as_of=None), projects=[])
+        entries = []
+        for project in active:
+            summary = await self._projects.get_project_status_summary(project.project_id)
+            entries.append(
+                ProjectSummaryEntry(
+                    project_id=project.project_id,
+                    name=project.name,
+                    status=project.status.value,
+                    committed_tasks=summary.committed_tasks,
+                    done_tasks=summary.done_tasks,
+                    total_tasks=summary.total_tasks,
+                    open_blockers=summary.open_blockers,
+                )
+            )
+        return ProjectsCard(meta=CardMeta(status="ok", as_of=now), projects=entries)
 
     async def _build_conversation(self, user_id: str) -> ConversationCard:
         sessions = await self._conversations.list_recent_sessions(user_id)

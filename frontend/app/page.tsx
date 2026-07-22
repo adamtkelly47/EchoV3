@@ -75,13 +75,23 @@ type Proposal = {
   expires_at: string;
 };
 
+type ProjectSummary = {
+  project_id: string;
+  name: string;
+  status: string;
+  committed_tasks: number;
+  done_tasks: number;
+  total_tasks: number;
+  open_blockers: number;
+};
+
 type DashboardData = {
   user_id: string;
   generated_at: string;
   today: { meta: CardMeta; events: CalendarEvent[] };
   money: { meta: CardMeta; dashboard: MoneyDashboard | null };
   attention: { meta: CardMeta; items: AttentionItem[] };
-  projects: { meta: CardMeta };
+  projects: { meta: CardMeta; projects: ProjectSummary[] };
   conversation: { meta: CardMeta; recent_sessions: RecentSession[] };
   integration_status: { meta: CardMeta; integrations: IntegrationEntry[] };
   approval_inbox: { meta: CardMeta; pending: Proposal[] };
@@ -206,7 +216,23 @@ function ProjectsCard({ card }: { card: DashboardData["projects"] }) {
     <section className="card" aria-labelledby="projects-heading">
       <h2 id="projects-heading">Projects</h2>
       <CardMetaLine meta={card.meta} />
-      <p className="empty-note">{card.meta.detail}</p>
+      {card.projects.length === 0 ? (
+        <p className="empty-note">{card.meta.detail || "No active projects yet."}</p>
+      ) : (
+        <ul>
+          {card.projects.map((project) => (
+            <li key={project.project_id}>
+              <strong>{project.name}</strong> — {project.done_tasks}/{project.total_tasks} tasks done
+              {project.open_blockers > 0 && (
+                <span className="status-badge status-warn">
+                  {" "}
+                  {project.open_blockers} blocker{project.open_blockers === 1 ? "" : "s"}
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   );
 }
