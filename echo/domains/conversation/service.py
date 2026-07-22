@@ -5,7 +5,7 @@ from typing import Any
 from core.time import Clock
 from domains.conversation.errors import SessionNotFoundError
 from domains.conversation.repository import ConversationRepository
-from domains.conversation.schemas import ConversationSession, Message, MessageRole
+from domains.conversation.schemas import Channel, ConversationSession, Message, MessageRole
 
 
 class ConversationService:
@@ -25,6 +25,8 @@ class ConversationService:
         role: MessageRole,
         content: str,
         evidence: dict[str, Any] | None = None,
+        channel: Channel = Channel.TEXT,
+        interrupted: bool = False,
     ) -> Message:
         if await self._repository.get_session(session_id) is None:
             raise SessionNotFoundError(f"no conversation session {session_id!r}")
@@ -34,6 +36,8 @@ class ConversationService:
             content=content,
             created_at=self._clock.now_utc(),
             evidence=evidence,
+            channel=channel,
+            interrupted=interrupted,
         )
         await self._repository.save_message(message)
         return message

@@ -32,6 +32,7 @@ class ProposalResponse(BaseModel):
 
 class ApproveRequest(BaseModel):
     approving_user_id: str
+    confirmation_method: str = "readable"
 
 
 class ApprovalDecisionResponse(BaseModel):
@@ -40,3 +41,9 @@ class ApprovalDecisionResponse(BaseModel):
     approving_user_id: str
     approved_at: datetime
     approval_expires_at: datetime
+    confirmation_method: str
+
+
+class SpokenSummaryResponse(BaseModel):
+    proposal_id: str
+    spoken_summary: str

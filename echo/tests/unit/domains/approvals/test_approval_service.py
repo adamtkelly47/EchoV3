@@ -8,8 +8,9 @@ from domains.approvals.errors import (
     InvalidStateTransitionError,
     PayloadMismatchError,
     SelfApprovalNotAllowedError,
+    VoiceConfirmationNotAllowedForHighRiskError,
 )
-from domains.approvals.models import SYSTEM_ACTOR, ProposalStatus, RiskLevel
+from domains.approvals.models import SYSTEM_ACTOR, ConfirmationMethod, ProposalStatus, RiskLevel
 from domains.approvals.service import ApprovalService
 from tests.unit.domains.approvals.fakes import (
     FakeApprovalDecisionRepository,
@@ -248,3 +249,63 @@ async def test_list_pending_for_user_scopes_by_user() -> None:
     inbox = await service.list_pending_for_user("user_2")
 
     assert [p.proposal_id for p in inbox] == [other_user_pending]
+
+
+# --- PROMPT.md Phase 26 verification: "no consequential action may be
+# approved solely through an ambiguous voice command. High risk actions
+# require an explicit readable confirmation interface." ---
+
+
+async def test_high_risk_proposal_cannot_be_approved_by_voice_alone() -> None:
+    service = _service()
+    proposal_id = await _propose_and_submit(service, risk_level=RiskLevel.HIGH)
+
+    with pytest.raises(VoiceConfirmationNotAllowedForHighRiskError):
+        await service.approve(
+            proposal_id,
+            "human_approver",
+            approval_ttl=timedelta(minutes=30),
+            confirmation_method=ConfirmationMethod.VOICE,
+        )
+
+    proposal = await service.get_proposal(proposal_id)
+    assert proposal.status == ProposalStatus.AWAITING_APPROVAL  # never transitioned
+
+
+async def test_high_risk_proposal_can_be_approved_by_readable_confirmation() -> None:
+    service = _service()
+    proposal_id = await _propose_and_submit(service, risk_level=RiskLevel.HIGH)
+
+    decision = await service.approve(
+        proposal_id,
+        "human_approver",
+        approval_ttl=timedelta(minutes=30),
+        confirmation_method=ConfirmationMethod.READABLE,
+    )
+    assert decision.confirmation_method == ConfirmationMethod.READABLE
+
+
+async def test_low_risk_proposal_can_be_approved_by_voice() -> None:
+    service = _service()
+    proposal_id = await _propose_and_submit(service, risk_level=RiskLevel.LOW)
+
+    decision = await service.approve(
+        proposal_id,
+        "human_approver",
+        approval_ttl=timedelta(minutes=30),
+        confirmation_method=ConfirmationMethod.VOICE,
+    )
+    assert decision.confirmation_method == ConfirmationMethod.VOICE
+
+
+async def test_approve_defaults_to_readable_confirmation() -> None:
+    """Every pre-Phase-26 caller (and any future one that doesn't think
+    about channel at all) gets the safe default, not an accidental
+    voice-confirmation bypass."""
+    service = _service()
+    proposal_id = await _propose_and_submit(service, risk_level=RiskLevel.HIGH)
+
+    decision = await service.approve(
+        proposal_id, "human_approver", approval_ttl=timedelta(minutes=30)
+    )
+    assert decision.confirmation_method == ConfirmationMethod.READABLE

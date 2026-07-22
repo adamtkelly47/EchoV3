@@ -17,8 +17,9 @@ from domains.approvals.errors import (
     PayloadMismatchError,
     ProposalNotFoundError,
     SelfApprovalNotAllowedError,
+    VoiceConfirmationNotAllowedForHighRiskError,
 )
-from domains.approvals.models import SYSTEM_ACTOR, ProposalStatus, RiskLevel
+from domains.approvals.models import SYSTEM_ACTOR, ConfirmationMethod, ProposalStatus, RiskLevel
 from domains.approvals.policies import hash_payload, is_expired, is_valid_transition
 from domains.approvals.repository import ApprovalDecisionRepository, ApprovalProposalRepository
 from domains.approvals.schemas import ActionProposal, ApprovalDecision
@@ -115,11 +116,24 @@ class ApprovalService:
         *,
         approval_ttl: timedelta,
         confirmation_challenge: str | None = None,
+        confirmation_method: ConfirmationMethod = ConfirmationMethod.READABLE,
     ) -> ApprovalDecision:
         if approving_user_id == SYSTEM_ACTOR:
             raise SelfApprovalNotAllowedError("the system may never approve its own proposal")
 
         proposal = await self._require_proposal(proposal_id)
+        if (
+            proposal.risk_level == RiskLevel.HIGH
+            and confirmation_method == ConfirmationMethod.VOICE
+        ):
+            # PROMPT.md Phase 26: "No consequential action may be approved
+            # solely through an ambiguous voice command. High risk actions
+            # require an explicit readable confirmation interface." —
+            # enforced here, structurally, not left to whichever caller
+            # happens to remember the rule.
+            raise VoiceConfirmationNotAllowedForHighRiskError(
+                f"{proposal_id} is high-risk and cannot be approved by voice confirmation alone"
+            )
         await self._transition(proposal, ProposalStatus.APPROVED)
 
         now = self._clock.now_utc()
@@ -130,6 +144,7 @@ class ApprovalService:
             approved_at=now,
             approval_expires_at=now + approval_ttl,
             confirmation_challenge=confirmation_challenge,
+            confirmation_method=confirmation_method,
         )
         await self._decisions.save(decision)
         await self._audit.record(

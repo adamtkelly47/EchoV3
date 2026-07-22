@@ -13,7 +13,14 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.dependencies import get_approval_service, get_db_session
-from apps.api.schemas.approvals import ApprovalDecisionResponse, ApproveRequest, ProposalResponse
+from apps.api.schemas.approvals import (
+    ApprovalDecisionResponse,
+    ApproveRequest,
+    ProposalResponse,
+    SpokenSummaryResponse,
+)
+from domains.approvals.models import ConfirmationMethod
+from domains.approvals.policies import build_spoken_summary
 from domains.approvals.schemas import ActionProposal, ApprovalDecision
 from domains.approvals.service import ApprovalService
 
@@ -43,8 +50,25 @@ def _to_response(proposal: ActionProposal) -> ProposalResponse:
 async def get_proposal(
     proposal_id: str, approvals: ApprovalService = Depends(get_approval_service)
 ) -> ProposalResponse:
+    """The "full readable review" side of PROMPT.md Phase 26 implement
+    item 6 — every field a person must actually see before approving,
+    never summarized. See `GET /{proposal_id}/spoken-summary` for the
+    short, TTS-appropriate counterpart."""
     proposal = await approvals.get_proposal(proposal_id)
     return _to_response(proposal)
+
+
+@router.get("/{proposal_id}/spoken-summary", response_model=SpokenSummaryResponse)
+async def get_spoken_summary(
+    proposal_id: str, approvals: ApprovalService = Depends(get_approval_service)
+) -> SpokenSummaryResponse:
+    """PROMPT.md Phase 26 implement item 6: the spoken-summary side of the
+    distinction — short and TTS-appropriate, never a substitute for the
+    full review `GET /{proposal_id}` returns."""
+    proposal = await approvals.get_proposal(proposal_id)
+    return SpokenSummaryResponse(
+        proposal_id=proposal.proposal_id, spoken_summary=build_spoken_summary(proposal)
+    )
 
 
 @router.post("/{proposal_id}/approve", response_model=ApprovalDecisionResponse)
@@ -55,7 +79,10 @@ async def approve(
     session: AsyncSession = Depends(get_db_session),
 ) -> ApprovalDecisionResponse:
     decision: ApprovalDecision = await approvals.approve(
-        proposal_id, body.approving_user_id, approval_ttl=_APPROVAL_TTL
+        proposal_id,
+        body.approving_user_id,
+        approval_ttl=_APPROVAL_TTL,
+        confirmation_method=ConfirmationMethod(body.confirmation_method),
     )
     await session.commit()
     return ApprovalDecisionResponse(
@@ -64,6 +91,7 @@ async def approve(
         approving_user_id=decision.approving_user_id,
         approved_at=decision.approved_at,
         approval_expires_at=decision.approval_expires_at,
+        confirmation_method=decision.confirmation_method.value,
     )
 
 

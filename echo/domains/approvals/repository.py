@@ -17,7 +17,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
-from domains.approvals.models import ProposalStatus
+from domains.approvals.models import ConfirmationMethod, ProposalStatus
 from domains.approvals.schemas import ActionProposal, ApprovalDecision
 from infrastructure.database.base import Base
 
@@ -55,6 +55,9 @@ class ApprovalDecisionRow(Base):
     approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     approval_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     confirmation_challenge: Mapped[str | None] = mapped_column(String)
+    confirmation_method: Mapped[str] = mapped_column(
+        String, default=ConfirmationMethod.READABLE.value
+    )
 
 
 def _proposal_to_row(proposal: ActionProposal) -> ApprovalProposalRow:
@@ -167,6 +170,7 @@ class PostgresApprovalDecisionRepository:
             approved_at=decision.approved_at,
             approval_expires_at=decision.approval_expires_at,
             confirmation_challenge=decision.confirmation_challenge,
+            confirmation_method=decision.confirmation_method.value,
         )
         self._session.add(row)
         await self._session.flush()
@@ -189,4 +193,5 @@ class PostgresApprovalDecisionRepository:
             approved_at=row.approved_at,
             approval_expires_at=row.approval_expires_at,
             confirmation_challenge=row.confirmation_challenge,
+            confirmation_method=ConfirmationMethod(row.confirmation_method),
         )

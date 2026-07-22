@@ -23,9 +23,17 @@ from pydantic import BaseModel
 from application.capabilities.current_time import CAPABILITY_ID
 from application.model_gateway_factory import ModelGatewayPort
 from core.errors import EchoError
+from core.events.envelope import EventEnvelope
 from core.observability import get_correlation_id
+from core.time import Clock
 from domains.capabilities.service import CapabilityExecutor
-from domains.conversation.schemas import Message, MessageRole
+from domains.conversation.events import (
+    ResponseChunkEvent,
+    ResponseChunkPayload,
+    TranscriptChunkPayload,
+)
+from domains.conversation.interfaces import InterruptSignal
+from domains.conversation.schemas import Channel, Message, MessageRole
 from domains.conversation.service import ConversationService
 from providers.models.contracts import ModelRequest, TaskType
 
@@ -73,13 +81,19 @@ class ConversationOrchestrator:
         conversations: ConversationService,
         executor: CapabilityExecutor,
         gateway: ModelGatewayPort,
+        clock: Clock,
     ) -> None:
         self._conversations = conversations
         self._executor = executor
         self._gateway = gateway
+        self._clock = clock
 
-    async def handle_message(self, session_id: str, text: str) -> Message:
-        await self._conversations.append_message(session_id, role=MessageRole.USER, content=text)
+    async def handle_message(
+        self, session_id: str, text: str, *, channel: Channel = Channel.TEXT
+    ) -> Message:
+        await self._conversations.append_message(
+            session_id, role=MessageRole.USER, content=text, channel=channel
+        )
 
         evidence = await self._gather_evidence(text)
         prompt = self._build_response_prompt(text, evidence)
@@ -92,21 +106,41 @@ class ConversationOrchestrator:
         )
 
         return await self._conversations.append_message(
-            session_id, role=MessageRole.ASSISTANT, content=response.output, evidence=evidence
+            session_id,
+            role=MessageRole.ASSISTANT,
+            content=response.output,
+            evidence=evidence,
+            channel=channel,
         )
 
-    async def handle_message_stream(self, session_id: str, text: str) -> AsyncIterator[str]:
+    async def handle_message_stream(
+        self,
+        session_id: str,
+        text: str,
+        *,
+        channel: Channel = Channel.TEXT,
+        interrupt: InterruptSignal | None = None,
+    ) -> AsyncIterator[ResponseChunkEvent]:
         """Same pipeline as handle_message, but the Response Generator step
         streams — evidence gathering happens first and is not itself
         streamed (PROMPT.md Phase 8: "Streaming response API"). The full
         accumulated text is persisted as the assistant message once
-        streaming completes."""
-        await self._conversations.append_message(session_id, role=MessageRole.USER, content=text)
+        streaming completes. Every yielded chunk is a real
+        `ResponseChunkEvent` (PROMPT.md Phase 26 implement item 3) — the
+        one shape any channel (chat's `POST /messages/stream`, or a future
+        voice channel) consumes, never raw, unwrapped text. `interrupt`
+        (PROMPT.md Phase 26 implement item 4) is checked between chunks;
+        when it fires, streaming stops early and the partial message is
+        persisted with `interrupted=True` rather than silently discarded."""
+        await self._conversations.append_message(
+            session_id, role=MessageRole.USER, content=text, channel=channel
+        )
 
         evidence = await self._gather_evidence(text)
         prompt = self._build_response_prompt(text, evidence)
 
         chunks: list[str] = []
+        was_interrupted = False
         async for chunk in self._gateway.generate_stream(
             ModelRequest(
                 task_type=TaskType.CONVERSATION,
@@ -114,12 +148,57 @@ class ConversationOrchestrator:
                 temperature=_RESPONSE_TEMPERATURE if evidence else None,
             )
         ):
+            if interrupt is not None and await interrupt.is_interrupted():
+                was_interrupted = True
+                break
             chunks.append(chunk)
-            yield chunk
+            yield EventEnvelope(
+                event_type="conversation.response_chunk",
+                occurred_at=self._clock.now_utc(),
+                payload=ResponseChunkPayload(session_id=session_id, text=chunk, is_final=False),
+            )
+
+        yield EventEnvelope(
+            event_type="conversation.response_chunk",
+            occurred_at=self._clock.now_utc(),
+            payload=ResponseChunkPayload(
+                session_id=session_id, text="", is_final=True, interrupted=was_interrupted
+            ),
+        )
 
         await self._conversations.append_message(
-            session_id, role=MessageRole.ASSISTANT, content="".join(chunks), evidence=evidence
+            session_id,
+            role=MessageRole.ASSISTANT,
+            content="".join(chunks),
+            evidence=evidence,
+            channel=channel,
+            interrupted=was_interrupted,
         )
+
+    async def handle_transcript_stream(
+        self,
+        session_id: str,
+        transcript_chunks: AsyncIterator[TranscriptChunkPayload],
+        *,
+        interrupt: InterruptSignal | None = None,
+    ) -> AsyncIterator[ResponseChunkEvent]:
+        """PROMPT.md Phase 26 implement item 2: "streaming transcript
+        events." The concrete proof that voice input does not diverge
+        from chat (this phase's own objective): once the transcript
+        stream reports `is_final=True`, the accumulated text is handed to
+        `handle_message_stream` unchanged — the exact same code path text
+        input already uses, with `channel=Channel.VOICE` the only
+        difference."""
+        final_text = ""
+        async for transcript in transcript_chunks:
+            final_text = transcript.text
+            if transcript.is_final:
+                break
+
+        async for event in self.handle_message_stream(
+            session_id, final_text, channel=Channel.VOICE, interrupt=interrupt
+        ):
+            yield event
 
     async def _gather_evidence(self, text: str) -> dict[str, object] | None:
         if not await self._needs_current_time(text):

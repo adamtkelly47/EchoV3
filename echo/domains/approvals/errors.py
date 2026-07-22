@@ -40,3 +40,14 @@ class NoApprovalOnRecordError(EchoError):
     retryable = False
     severity = Severity.HIGH
     http_status = 404
+
+
+class VoiceConfirmationNotAllowedForHighRiskError(EchoError):
+    """PROMPT.md Phase 26: "No consequential action may be approved
+    solely through an ambiguous voice command. High risk actions require
+    an explicit readable confirmation interface.\" """
+
+    code = "voice_confirmation_not_allowed_for_high_risk"
+    retryable = False
+    severity = Severity.CRITICAL
+    http_status = 403

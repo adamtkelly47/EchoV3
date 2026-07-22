@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from domains.conversation.repository import PostgresConversationRepository
-from domains.conversation.schemas import ConversationSession, Message, MessageRole
+from domains.conversation.schemas import Channel, ConversationSession, Message, MessageRole
 
 
 async def test_save_and_get_session(db_session: AsyncSession) -> None:
@@ -42,6 +42,47 @@ async def test_messages_round_trip_with_evidence(db_session: AsyncSession) -> No
     history = await repo.get_messages(session.session_id)
     assert [m.role for m in history] == [MessageRole.USER, MessageRole.ASSISTANT]
     assert history[1].evidence == {"current_time": {"iso_timestamp": "2026-01-01T12:00:00+00:00"}}
+
+
+async def test_message_channel_and_interrupted_round_trip(db_session: AsyncSession) -> None:
+    """PROMPT.md Phase 26 implement items 1 and 4: "input channel
+    abstraction" and "interruption handling contract" — proven against
+    real Postgres, not just the in-memory fake."""
+    repo = PostgresConversationRepository(db_session)
+    session = ConversationSession(user_id="user_1", started_at=datetime(2026, 1, 1, tzinfo=UTC))
+    await repo.save_session(session)
+
+    voice_message = Message(
+        session_id=session.session_id,
+        role=MessageRole.ASSISTANT,
+        content="partial reply",
+        created_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
+        channel=Channel.VOICE,
+        interrupted=True,
+    )
+    await repo.save_message(voice_message)
+
+    history = await repo.get_messages(session.session_id)
+    assert history[0].channel == Channel.VOICE
+    assert history[0].interrupted is True
+
+
+async def test_message_channel_defaults_to_text(db_session: AsyncSession) -> None:
+    repo = PostgresConversationRepository(db_session)
+    session = ConversationSession(user_id="user_1", started_at=datetime(2026, 1, 1, tzinfo=UTC))
+    await repo.save_session(session)
+
+    message = Message(
+        session_id=session.session_id,
+        role=MessageRole.USER,
+        content="hello",
+        created_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
+    )
+    await repo.save_message(message)
+
+    history = await repo.get_messages(session.session_id)
+    assert history[0].channel == Channel.TEXT
+    assert history[0].interrupted is False
 
 
 async def test_list_recent_sessions_for_user_orders_most_recent_first(

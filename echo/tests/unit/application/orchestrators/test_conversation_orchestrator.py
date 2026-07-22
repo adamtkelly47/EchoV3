@@ -36,7 +36,7 @@ def _build(
     registry.register(build_current_time_capability(clock))
     executor = CapabilityExecutor(registry, FakeToolCallRepository(), clock)
     gateway = FakeModelGateway(structured_decision=_TimeNeedDecision(needs_current_time=needs_time))
-    orchestrator = ConversationOrchestrator(conversations, executor, gateway)
+    orchestrator = ConversationOrchestrator(conversations, executor, gateway, clock)
     return orchestrator, conversations, gateway
 
 
@@ -112,10 +112,16 @@ async def test_streaming_variant_persists_the_full_accumulated_response() -> Non
     orchestrator, conversations, _ = _build(needs_time=True, clock=clock)
     session = await conversations.start_session("user_1")
 
-    chunks = [chunk async for chunk in orchestrator.handle_message_stream(session.session_id, "hi")]
-    assert len(chunks) > 1  # genuinely streamed as multiple pieces
+    events = [event async for event in orchestrator.handle_message_stream(session.session_id, "hi")]
+    # PROMPT.md Phase 26 implement item 3: every yielded chunk is a real
+    # ResponseChunkEvent, not a bare string — the final one always marks
+    # is_final=True.
+    assert len(events) > 1  # genuinely streamed as multiple pieces
+    assert events[-1].payload.is_final is True
+    assert all(not e.payload.is_final for e in events[:-1])
 
     history = await conversations.get_history(session.session_id)
     assistant_message = history[-1]
     assert assistant_message.role == MessageRole.ASSISTANT
-    assert assistant_message.content == "".join(chunks)
+    assert assistant_message.content == "".join(e.payload.text for e in events[:-1])
+    assert assistant_message.interrupted is False

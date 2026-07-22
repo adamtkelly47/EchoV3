@@ -173,7 +173,7 @@ def get_conversation_orchestrator(
     executor: CapabilityExecutor = Depends(get_capability_executor),
     gateway: ModelGatewayPort = Depends(get_model_gateway),
 ) -> ConversationOrchestrator:
-    return ConversationOrchestrator(conversations, executor, gateway)
+    return ConversationOrchestrator(conversations, executor, gateway, SystemClock())
 
 
 def get_memory_service(

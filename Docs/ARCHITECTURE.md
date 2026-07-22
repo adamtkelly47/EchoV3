@@ -63,7 +63,9 @@ echo/
         time/           # clock abstraction
         identifiers/    # id generation
         provenance/     # source record + computed value contracts
-        events/         # generic event envelope contract
+        events/         # generic event envelope contract — defined since an early phase but
+                        # with no real publisher until Phase 26's ResponseChunkEvent/
+                        # TranscriptChunkEvent (domains/conversation/events.py)
         jobs/           # generic job envelope contract — added in Phase 3, not the original
                         # Section 7 tree; kept distinct from events/ since a job is work still
                         # to be done, not a completed business fact (see ADR reasoning in
@@ -72,8 +74,13 @@ echo/
         capabilities/   # the generic capability *contract* shape (Phase 3) — not the registry,
                         # which the Capabilities domain owns starting Phase 5
     domains/
-        conversation/   # populated Phase 8: schemas, repository, service, errors
-        approvals/      # populated Phase 6: models, schemas, errors, policies, service, repository
+        conversation/   # populated Phase 8: schemas, repository, service, errors. Phase 26 added
+                        # events.py (TranscriptChunkPayload/ResponseChunkPayload, riding
+                        # core/events/envelope.py's EventEnvelope) and interfaces.py
+                        # (InterruptSignal) — voice preparation, no new provider
+        approvals/      # populated Phase 6: models, schemas, errors, policies, service, repository.
+                        # Phase 26 added ConfirmationMethod (models.py) and build_spoken_summary
+                        # (policies.py) — the voice-safe approval requirement
         capabilities/   # populated Phase 5: models, errors, policies, service (no repository.py —
                          # the registry is in-process/code-populated; only execution audit persists,
                          # via infrastructure/database's ToolCallRepository from Phase 4)

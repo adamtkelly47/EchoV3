@@ -10,7 +10,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from core.identifiers import new_id
-from domains.approvals.models import ProposalStatus, RiskLevel
+from domains.approvals.models import ConfirmationMethod, ProposalStatus, RiskLevel
 
 
 class ActionProposal(BaseModel):
@@ -42,3 +42,4 @@ class ApprovalDecision(BaseModel):
     approved_at: datetime
     approval_expires_at: datetime
     confirmation_challenge: str | None = None
+    confirmation_method: ConfirmationMethod = ConfirmationMethod.READABLE

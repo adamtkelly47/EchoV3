@@ -8,12 +8,12 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Protocol
 
-from sqlalchemy import DateTime, ForeignKey, String, select
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
-from domains.conversation.schemas import ConversationSession, Message, MessageRole
+from domains.conversation.schemas import Channel, ConversationSession, Message, MessageRole
 from infrastructure.database.base import Base
 
 
@@ -37,6 +37,8 @@ class MessageRow(Base):
     content: Mapped[str] = mapped_column(String)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     evidence: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    channel: Mapped[str] = mapped_column(String, default=Channel.TEXT.value)
+    interrupted: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class ConversationRepository(Protocol):
@@ -104,6 +106,8 @@ class PostgresConversationRepository:
             content=message.content,
             created_at=message.created_at,
             evidence=message.evidence,
+            channel=message.channel.value,
+            interrupted=message.interrupted,
         )
         self._session.add(row)
         await self._session.flush()
@@ -122,6 +126,8 @@ class PostgresConversationRepository:
                 content=row.content,
                 created_at=row.created_at,
                 evidence=row.evidence,
+                channel=Channel(row.channel),
+                interrupted=row.interrupted,
             )
             for row in result.scalars().all()
         ]

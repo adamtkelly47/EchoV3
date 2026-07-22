@@ -58,3 +58,16 @@ class RiskLevel(str, Enum):
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
+
+
+class ConfirmationMethod(str, Enum):
+    """PROMPT.md Phase 26 implement item 5: "voice safe approval
+    requirement." Approvals never imports Conversation's own `Channel`
+    enum (that would be a domain-to-domain import,
+    scripts/check_architecture.py's `no-domain-to-domain-imports` rule) —
+    this is Approvals' own vocabulary for how a decision was confirmed,
+    the same "speaks in primitives" pattern `domains/system/policies.py`'s
+    `find_calendar_conflicts` already established one layer down."""
+
+    VOICE = "voice"
+    READABLE = "readable"

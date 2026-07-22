@@ -19,6 +19,7 @@ class StartConversationResponse(BaseModel):
 
 class SendMessageRequest(BaseModel):
     content: str
+    channel: str = "text"
 
 
 class MessageResponse(BaseModel):
@@ -27,8 +28,20 @@ class MessageResponse(BaseModel):
     content: str
     created_at: datetime
     evidence: dict[str, Any] | None = None
+    channel: str
+    interrupted: bool
 
 
 class ConversationHistoryResponse(BaseModel):
     session_id: str
     messages: list[MessageResponse]
+
+
+class ResponseChunkResponse(BaseModel):
+    event_id: str
+    event_type: str
+    occurred_at: datetime
+    session_id: str
+    text: str
+    is_final: bool
+    interrupted: bool
