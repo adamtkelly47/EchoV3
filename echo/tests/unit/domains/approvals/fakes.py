@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from domains.approvals.models import ProposalStatus
 from domains.approvals.schemas import ActionProposal, ApprovalDecision
 
 
@@ -18,6 +19,13 @@ class FakeApprovalProposalRepository:
 
     async def get(self, proposal_id: str) -> ActionProposal | None:
         return self._store.get(proposal_id)
+
+    async def list_pending_for_user(self, user_id: str) -> list[ActionProposal]:
+        return [
+            p
+            for p in self._store.values()
+            if p.user_id == user_id and p.status == ProposalStatus.AWAITING_APPROVAL
+        ]
 
 
 class FakeApprovalDecisionRepository:

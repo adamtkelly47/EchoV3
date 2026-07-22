@@ -118,6 +118,12 @@ class CalendarService:
         )
         return credential
 
+    async def is_connected(self, user_id: str) -> bool:
+        """PROMPT.md Phase 22 implement item 6: "integration status." A
+        credential existing is the real, honest signal available here —
+        never a live provider health check on every dashboard load."""
+        return await self._credentials.get_for_user(user_id) is not None
+
     async def list_calendars(self, user_id: str) -> list[CalendarInfo]:
         access_token = await self.get_valid_access_token(user_id)
         raw = await self._provider.list_calendars(access_token)

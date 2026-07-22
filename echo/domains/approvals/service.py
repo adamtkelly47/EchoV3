@@ -100,6 +100,10 @@ class ApprovalService:
     async def get_proposal(self, proposal_id: str) -> ActionProposal:
         return await self._require_proposal(proposal_id)
 
+    async def list_pending_for_user(self, user_id: str) -> list[ActionProposal]:
+        """PROMPT.md Phase 22 implement item 7: "approval inbox.\" """
+        return await self._proposals.list_pending_for_user(user_id)
+
     async def submit_for_approval(self, proposal_id: str) -> ActionProposal:
         proposal = await self._require_proposal(proposal_id)
         return await self._transition(proposal, ProposalStatus.AWAITING_APPROVAL)

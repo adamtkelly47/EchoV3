@@ -42,6 +42,9 @@ class MessageRow(Base):
 class ConversationRepository(Protocol):
     async def save_session(self, session: ConversationSession) -> None: ...
     async def get_session(self, session_id: str) -> ConversationSession | None: ...
+    async def list_recent_sessions_for_user(
+        self, user_id: str, *, limit: int = 5
+    ) -> list[ConversationSession]: ...
     async def save_message(self, message: Message) -> None: ...
     async def get_messages(self, session_id: str) -> list[Message]: ...
 
@@ -70,6 +73,28 @@ class PostgresConversationRepository:
             started_at=row.started_at,
             status=row.status,
         )
+
+    async def list_recent_sessions_for_user(
+        self, user_id: str, *, limit: int = 5
+    ) -> list[ConversationSession]:
+        """PROMPT.md Phase 22 implement item 5: "conversation" (dashboard
+        card). Most-recent-first, capped — a dashboard summary, not a full
+        history browser."""
+        result = await self._session.execute(
+            select(ConversationSessionRow)
+            .where(ConversationSessionRow.user_id == user_id)
+            .order_by(ConversationSessionRow.started_at.desc())
+            .limit(limit)
+        )
+        return [
+            ConversationSession(
+                session_id=row.session_id,
+                user_id=row.user_id,
+                started_at=row.started_at,
+                status=row.status,
+            )
+            for row in result.scalars().all()
+        ]
 
     async def save_message(self, message: Message) -> None:
         row = MessageRow(

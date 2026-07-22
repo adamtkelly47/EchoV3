@@ -42,3 +42,10 @@ class ConversationService:
         if await self._repository.get_session(session_id) is None:
             raise SessionNotFoundError(f"no conversation session {session_id!r}")
         return await self._repository.get_messages(session_id)
+
+    async def list_recent_sessions(
+        self, user_id: str, *, limit: int = 5
+    ) -> list[ConversationSession]:
+        """PROMPT.md Phase 22 implement item 5: "conversation" (dashboard
+        card)."""
+        return await self._repository.list_recent_sessions_for_user(user_id, limit=limit)

@@ -23,6 +23,7 @@ from application.orchestrators.insider_intelligence import InsiderIntelligenceOr
 from application.orchestrators.memory_extraction import MemoryExtractionOrchestrator
 from application.orchestrators.news_intelligence import NewsIntelligenceOrchestrator
 from application.portfolio_provider_factory import build_schwab_provider
+from application.queries.dashboard_query import DashboardQueryService
 from application.research_provider_factory import (
     build_form4_providers,
     build_legislator_reference_provider,
@@ -258,3 +259,14 @@ def get_insider_intelligence_orchestrator(
     gateway: ModelGatewayPort = Depends(get_model_gateway),
 ) -> InsiderIntelligenceOrchestrator:
     return InsiderIntelligenceOrchestrator(research, gateway)
+
+
+def get_dashboard_query_service(
+    portfolio: PortfolioService = Depends(get_portfolio_service),
+    calendar: CalendarService = Depends(get_calendar_service),
+    approvals: ApprovalService = Depends(get_approval_service),
+    conversations: ConversationService = Depends(get_conversation_service),
+) -> DashboardQueryService:
+    return DashboardQueryService(
+        portfolio, calendar, approvals, conversations, SystemClock(), get_settings()
+    )

@@ -15,6 +15,16 @@ class FakeConversationRepository:
     async def get_session(self, session_id: str) -> ConversationSession | None:
         return self.sessions.get(session_id)
 
+    async def list_recent_sessions_for_user(
+        self, user_id: str, *, limit: int = 5
+    ) -> list[ConversationSession]:
+        matches = sorted(
+            (s for s in self.sessions.values() if s.user_id == user_id),
+            key=lambda s: s.started_at,
+            reverse=True,
+        )
+        return matches[:limit]
+
     async def save_message(self, message: Message) -> None:
         self.messages.setdefault(message.session_id, []).append(message)
 

@@ -1,0 +1,220 @@
+/* Global styles for the unified dashboard (PROMPT.md Phase 22 implement
+   items 9-10: responsive design, accessibility). Plain CSS — no framework
+   dependency added for a single page (No Future Scaffolding). */
+
+:root {
+  color-scheme: light;
+  --color-bg: #f7f7f8;
+  --color-card-bg: #ffffff;
+  --color-border: #d8dbe0;
+  --color-text: #1a1d23;
+  --color-text-muted: #5b6270;
+  --color-focus: #1856c4;
+  --color-ok: #146c2e;
+  --color-ok-bg: #e5f5ea;
+  --color-warn: #8a5300;
+  --color-warn-bg: #fdf1de;
+  --color-danger: #a3151a;
+  --color-danger-bg: #fbe6e7;
+  --color-neutral: #4b5160;
+  --color-neutral-bg: #edeef1;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
+  line-height: 1.45;
+}
+
+a {
+  color: var(--color-focus);
+}
+
+/* Every interactive element keeps a visible focus ring — accessibility
+   (PROMPT.md Phase 22 implement item 10), never `outline: none` alone. */
+a:focus-visible,
+button:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.dashboard {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+.dashboard-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1rem;
+}
+
+.card {
+  background: var(--color-card-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 1.25rem;
+}
+
+.card h2 {
+  font-size: 1.05rem;
+  margin: 0 0 0.5rem;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+}
+
+.status-ok {
+  color: var(--color-ok);
+  background: var(--color-ok-bg);
+}
+
+.status-warn {
+  color: var(--color-warn);
+  background: var(--color-warn-bg);
+}
+
+.status-danger {
+  color: var(--color-danger);
+  background: var(--color-danger-bg);
+}
+
+.status-neutral {
+  color: var(--color-neutral);
+  background: var(--color-neutral-bg);
+}
+
+.freshness {
+  display: block;
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+  margin: 0.35rem 0 0.75rem;
+}
+
+.card ul {
+  margin: 0;
+  padding-left: 1.1rem;
+}
+
+.card li {
+  margin-bottom: 0.35rem;
+}
+
+.empty-note {
+  color: var(--color-text-muted);
+  font-size: 0.9rem;
+}
+
+/* Approval actions must never be mistaken for ordinary buttons (PROMPT.md
+   Phase 22 verification 3) — a distinct group heading, distinct colors per
+   action, and an explicit confirmation step before either fires. */
+.approval-item {
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 0.75rem;
+  margin-bottom: 0.6rem;
+}
+
+.approval-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.6rem;
+}
+
+.approval-button {
+  font-weight: 700;
+  font-size: 0.85rem;
+  border-radius: 6px;
+  padding: 0.4rem 0.9rem;
+  border: 2px solid transparent;
+  cursor: pointer;
+}
+
+.approval-button-approve {
+  background: var(--color-ok-bg);
+  color: var(--color-ok);
+  border-color: var(--color-ok);
+}
+
+.approval-button-reject {
+  background: var(--color-danger-bg);
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+
+.approval-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.integration-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.integration-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+
+.integration-dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 999px;
+  flex: none;
+}
+
+.integration-dot-connected {
+  background: var(--color-ok);
+}
+
+.integration-dot-disconnected {
+  background: var(--color-neutral);
+}
+
+/* Responsive design (PROMPT.md Phase 22 implement item 9): a narrower
+   viewport gets tighter spacing and a single-column grid rather than
+   cramped multi-column cards. */
+@media (max-width: 640px) {
+  .dashboard {
+    padding: 1rem;
+  }
+
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .card {
+    padding: 1rem;
+  }
+}

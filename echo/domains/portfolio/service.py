@@ -225,6 +225,12 @@ class PortfolioService:
     async def get_accounts(self, user_id: str) -> list[Account]:
         return await self._portfolio.list_accounts(user_id)
 
+    async def is_connected(self, user_id: str) -> bool:
+        """PROMPT.md Phase 22 implement item 6: "integration status." A
+        credential existing is the real, honest signal available here —
+        never a live Schwab health check on every dashboard load."""
+        return await self._credentials.get_for_user(user_id) is not None
+
     async def get_dashboard(self, user_id: str) -> MoneyDashboard:
         """PROMPT.md Phase 13: turns the latest already-synced, reconciled
         snapshot into deterministic analysis. Never triggers a live Schwab

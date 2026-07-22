@@ -221,3 +221,30 @@ async def test_rejected_proposal_cannot_be_approved() -> None:
 
     with pytest.raises(InvalidStateTransitionError):
         await service.approve(proposal_id, "human_approver", approval_ttl=timedelta(minutes=30))
+
+
+async def test_list_pending_for_user_only_returns_awaiting_approval() -> None:
+    """PROMPT.md Phase 22 implement item 7: "approval inbox." A
+    `VALIDATED`-but-not-yet-submitted proposal, and any terminal-state
+    proposal, must not appear in the inbox — only proposals genuinely
+    awaiting a human decision."""
+    service = _service()
+    validated_only = await _propose(service, user_id="user_1")
+    pending = await _propose_and_submit(service, user_id="user_1")
+    rejected = await _propose_and_submit(service, user_id="user_1")
+    await service.reject(rejected)
+
+    inbox = await service.list_pending_for_user("user_1")
+
+    assert [p.proposal_id for p in inbox] == [pending]
+    assert validated_only not in [p.proposal_id for p in inbox]
+
+
+async def test_list_pending_for_user_scopes_by_user() -> None:
+    service = _service()
+    await _propose_and_submit(service, user_id="user_1")
+    other_user_pending = await _propose_and_submit(service, user_id="user_2")
+
+    inbox = await service.list_pending_for_user("user_2")
+
+    assert [p.proposal_id for p in inbox] == [other_user_pending]

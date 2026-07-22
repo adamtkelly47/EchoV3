@@ -66,6 +66,15 @@ async def _connect(service: PortfolioService, user_id: str = "user_1") -> None:
     await service.complete_authorization("auth-code", state_value)
 
 
+async def test_is_connected_reflects_credential_presence() -> None:
+    """PROMPT.md Phase 22 implement item 6: "integration status.\" """
+    service, _, _, _, _ = _service()
+    assert await service.is_connected("user_1") is False
+
+    await _connect(service)
+    assert await service.is_connected("user_1") is True
+
+
 async def test_connect_stores_encrypted_tokens_and_refresh_expiry() -> None:
     service, _, _, credentials, _ = _service()
     await _connect(service)

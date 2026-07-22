@@ -17,6 +17,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
+from domains.approvals.models import ProposalStatus
 from domains.approvals.schemas import ActionProposal, ApprovalDecision
 from infrastructure.database.base import Base
 
@@ -105,6 +106,7 @@ def _row_to_proposal(row: ApprovalProposalRow) -> ActionProposal:
 class ApprovalProposalRepository(Protocol):
     async def save(self, proposal: ActionProposal) -> None: ...
     async def get(self, proposal_id: str) -> ActionProposal | None: ...
+    async def list_pending_for_user(self, user_id: str) -> list[ActionProposal]: ...
 
 
 class ApprovalDecisionRepository(Protocol):
@@ -134,6 +136,22 @@ class PostgresApprovalProposalRepository:
     async def get(self, proposal_id: str) -> ActionProposal | None:
         row = await self._session.get(ApprovalProposalRow, proposal_id)
         return _row_to_proposal(row) if row is not None else None
+
+    async def list_pending_for_user(self, user_id: str) -> list[ActionProposal]:
+        """PROMPT.md Phase 22 implement item 7: "approval inbox." Pending
+        means awaiting a human decision — `AWAITING_APPROVAL` specifically,
+        not `VALIDATED` (a proposal `ApprovalService.propose` creates but
+        `submit_for_approval` hasn't yet moved forward) or any terminal
+        state. Ordered most-recent-first, the natural inbox order."""
+        result = await self._session.execute(
+            select(ApprovalProposalRow)
+            .where(
+                ApprovalProposalRow.user_id == user_id,
+                ApprovalProposalRow.status == ProposalStatus.AWAITING_APPROVAL.value,
+            )
+            .order_by(ApprovalProposalRow.created_at.desc())
+        )
+        return [_row_to_proposal(row) for row in result.scalars().all()]
 
 
 class PostgresApprovalDecisionRepository:

@@ -15,6 +15,7 @@ from redis.asyncio import Redis
 from apps.api.routes.approvals import router as approvals_router
 from apps.api.routes.calendar import router as calendar_router
 from apps.api.routes.conversations import router as conversations_router
+from apps.api.routes.dashboard import router as dashboard_router
 from apps.api.routes.memory import router as memory_router
 from apps.api.routes.portfolio import router as portfolio_router
 from apps.api.routes.research import router as research_router
@@ -34,6 +35,7 @@ app.include_router(calendar_router)
 app.include_router(approvals_router)
 app.include_router(portfolio_router)
 app.include_router(research_router)
+app.include_router(dashboard_router)
 
 # Frontend runs on a different origin (localhost:3000 vs. this API's
 # localhost:8000) — the browser needs explicit CORS permission. Origin is

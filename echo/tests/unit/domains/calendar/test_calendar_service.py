@@ -34,6 +34,15 @@ def _service(
     return service, provider, credentials
 
 
+async def test_is_connected_reflects_credential_presence() -> None:
+    """PROMPT.md Phase 22 implement item 6: "integration status.\" """
+    service, _, _ = _service()
+    assert await service.is_connected("user_1") is False
+
+    await service.connect("user_1", "auth-code-123")
+    assert await service.is_connected("user_1") is True
+
+
 async def test_connect_stores_encrypted_tokens_not_plaintext() -> None:
     service, _, credentials = _service()
     credential = await service.connect("user_1", "auth-code-123")
