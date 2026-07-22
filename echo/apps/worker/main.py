@@ -38,6 +38,7 @@ from domains.calendar.repository import (
 from domains.calendar.service import CalendarService
 from domains.portfolio.repository import (
     PostgresComplianceResultRepository,
+    PostgresHypotheticalTradeRepository,
     PostgresIPSRepository,
     PostgresPortfolioRepository,
     PostgresSchwabCredentialRepository,
@@ -82,6 +83,7 @@ async def _run_monitoring_evaluate() -> None:
             PostgresComputedValueRecordRepository(session),
             PostgresIPSRepository(session),
             PostgresComplianceResultRepository(session),
+            PostgresHypotheticalTradeRepository(session),
         )
         calendar = CalendarService(
             PostgresCalendarCredentialRepository(session),

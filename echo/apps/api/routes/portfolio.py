@@ -21,12 +21,16 @@ from apps.api.schemas.portfolio import (
     AccountResponse,
     AllocationRangeResponse,
     AssetClassExposureResponse,
+    CloseHypotheticalTradeRequest,
     CompleteAuthorizationRequest,
     ComplianceBreachResponse,
     ComplianceResultResponse,
     ConcentrationWarningResponse,
     ConnectResponse,
     CreateIPSVersionRequest,
+    HypotheticalPerformanceSampleResponse,
+    HypotheticalTradeEvaluationResponse,
+    HypotheticalTradeResponse,
     IPSVersionListResponse,
     IPSVersionResponse,
     MoneyDashboardResponse,
@@ -34,6 +38,7 @@ from apps.api.schemas.portfolio import (
     PositionWeightResponse,
     PriceHistoryPointResponse,
     PriceHistoryResponse,
+    ProposeHypotheticalTradeRequest,
     QuoteListResponse,
     QuoteResponse,
     RestrictedSecurityResponse,
@@ -41,11 +46,14 @@ from apps.api.schemas.portfolio import (
     SnapshotResponse,
     SymbolExposureResponse,
 )
-from domains.portfolio.models import AssetType
+from domains.portfolio.models import AssetType, HypotheticalTradeAction
 from domains.portfolio.schemas import (
     AllocationRange,
     ComplianceResult,
     ConcentrationRule,
+    HypotheticalPerformanceSample,
+    HypotheticalTrade,
+    HypotheticalTradeEvaluation,
     IPSVersion,
 )
 from domains.portfolio.schemas import RestrictedSecurity as DomainRestrictedSecurity
@@ -343,3 +351,118 @@ async def price_history(
             for p in points
         ],
     )
+
+
+# --- PROMPT.md Phase 27: paper trading observation. No order/execute
+# endpoint exists here or anywhere else in this router — enforced by
+# omission, matching this module's own Schwab-connection precedent. ---
+
+
+def _to_hypothetical_trade_response(trade: HypotheticalTrade) -> HypotheticalTradeResponse:
+    return HypotheticalTradeResponse(
+        trade_id=trade.trade_id,
+        user_id=trade.user_id,
+        symbol=trade.symbol,
+        action=trade.action.value,
+        quantity=trade.quantity,
+        hypothetical_price=trade.hypothetical_price,
+        rationale=trade.rationale,
+        rationale_references=trade.rationale_references,
+        expected_outcome=trade.expected_outcome,
+        expected_horizon_days=trade.expected_horizon_days,
+        proposed_at=trade.proposed_at,
+        status=trade.status.value,
+        review_note=trade.review_note,
+        reviewed_at=trade.reviewed_at,
+        closing_price=trade.closing_price,
+    )
+
+
+def _to_sample_response(
+    sample: HypotheticalPerformanceSample,
+) -> HypotheticalPerformanceSampleResponse:
+    return HypotheticalPerformanceSampleResponse(
+        sample_id=sample.sample_id,
+        trade_id=sample.trade_id,
+        observed_at=sample.observed_at,
+        price=sample.price,
+        gain_loss_percent=sample.gain_loss_percent,
+    )
+
+
+def _to_evaluation_response(
+    evaluation: HypotheticalTradeEvaluation,
+) -> HypotheticalTradeEvaluationResponse:
+    return HypotheticalTradeEvaluationResponse(
+        trade=_to_hypothetical_trade_response(evaluation.trade),
+        latest_sample=(
+            _to_sample_response(evaluation.latest_sample)
+            if evaluation.latest_sample is not None
+            else None
+        ),
+        gain_loss_percent=evaluation.gain_loss_percent,
+        comparison_vs_no_action_percent=evaluation.comparison_vs_no_action_percent,
+        thesis_direction_correct=evaluation.thesis_direction_correct,
+        days_to_realize=evaluation.days_to_realize,
+    )
+
+
+@router.post("/hypothetical-trades", response_model=HypotheticalTradeResponse)
+async def propose_hypothetical_trade(
+    body: ProposeHypotheticalTradeRequest,
+    portfolio: PortfolioService = Depends(get_portfolio_service),
+    session: AsyncSession = Depends(get_db_session),
+) -> HypotheticalTradeResponse:
+    trade = await portfolio.propose_hypothetical_trade(
+        body.user_id,
+        symbol=body.symbol,
+        action=HypotheticalTradeAction(body.action),
+        quantity=body.quantity,
+        rationale=body.rationale,
+        expected_outcome=body.expected_outcome,
+        expected_horizon_days=body.expected_horizon_days,
+        rationale_references=body.rationale_references,
+    )
+    await session.commit()
+    return _to_hypothetical_trade_response(trade)
+
+
+@router.get("/hypothetical-trades", response_model=list[HypotheticalTradeResponse])
+async def list_hypothetical_trades(
+    user_id: str, portfolio: PortfolioService = Depends(get_portfolio_service)
+) -> list[HypotheticalTradeResponse]:
+    trades = await portfolio.list_hypothetical_trades_for_user(user_id)
+    return [_to_hypothetical_trade_response(t) for t in trades]
+
+
+@router.get("/hypothetical-trades/{trade_id}", response_model=HypotheticalTradeEvaluationResponse)
+async def get_hypothetical_trade_evaluation(
+    trade_id: str, portfolio: PortfolioService = Depends(get_portfolio_service)
+) -> HypotheticalTradeEvaluationResponse:
+    evaluation = await portfolio.evaluate_hypothetical_trade(trade_id)
+    return _to_evaluation_response(evaluation)
+
+
+@router.post(
+    "/hypothetical-trades/{trade_id}/samples", response_model=HypotheticalPerformanceSampleResponse
+)
+async def record_hypothetical_performance_sample(
+    trade_id: str,
+    portfolio: PortfolioService = Depends(get_portfolio_service),
+    session: AsyncSession = Depends(get_db_session),
+) -> HypotheticalPerformanceSampleResponse:
+    sample = await portfolio.record_hypothetical_performance_sample(trade_id)
+    await session.commit()
+    return _to_sample_response(sample)
+
+
+@router.post("/hypothetical-trades/{trade_id}/close", response_model=HypotheticalTradeResponse)
+async def close_hypothetical_trade(
+    trade_id: str,
+    body: CloseHypotheticalTradeRequest,
+    portfolio: PortfolioService = Depends(get_portfolio_service),
+    session: AsyncSession = Depends(get_db_session),
+) -> HypotheticalTradeResponse:
+    trade = await portfolio.close_hypothetical_trade(trade_id, review_note=body.review_note)
+    await session.commit()
+    return _to_hypothetical_trade_response(trade)

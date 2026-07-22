@@ -86,7 +86,12 @@ echo/
                          # via infrastructure/database's ToolCallRepository from Phase 4)
         portfolio/      # populated Phase 12: models, schemas, errors, policies, service,
                          # repository — Schwab accounts/positions/balances/snapshots, reconciled
-                         # against Schwab's own reported totals before being trusted
+                         # against Schwab's own reported totals before being trusted. Phase 27
+                         # extended it with HypotheticalTrade/HypotheticalPerformanceSample — no
+                         # new domain (nothing here has an independent lifecycle Portfolio
+                         # doesn't already own the natural extension of); no order/execute path
+                         # anywhere, enforced by omission like Phase 12's own real-trading
+                         # guarantee
         research/       # populated Phase 16: errors, policies, repository, schemas, service —
                          # provider-independent issuer identity/security master (models.py
                          # skipped; the one enum so far, EventType, lives in schemas.py

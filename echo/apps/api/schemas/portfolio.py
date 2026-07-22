@@ -201,3 +201,53 @@ class ComplianceResultResponse(BaseModel):
     evaluated_at: datetime
     compliant: bool
     breaches: list[ComplianceBreachResponse]
+
+
+class ProposeHypotheticalTradeRequest(BaseModel):
+    user_id: str
+    symbol: str
+    action: str
+    quantity: float
+    rationale: str
+    expected_outcome: str
+    expected_horizon_days: int
+    rationale_references: list[str] = []
+
+
+class CloseHypotheticalTradeRequest(BaseModel):
+    review_note: str
+
+
+class HypotheticalTradeResponse(BaseModel):
+    trade_id: str
+    user_id: str
+    symbol: str
+    action: str
+    quantity: float
+    hypothetical_price: float
+    rationale: str
+    rationale_references: list[str]
+    expected_outcome: str
+    expected_horizon_days: int
+    proposed_at: datetime
+    status: str
+    review_note: str | None
+    reviewed_at: datetime | None
+    closing_price: float | None
+
+
+class HypotheticalPerformanceSampleResponse(BaseModel):
+    sample_id: str
+    trade_id: str
+    observed_at: datetime
+    price: float
+    gain_loss_percent: float
+
+
+class HypotheticalTradeEvaluationResponse(BaseModel):
+    trade: HypotheticalTradeResponse
+    latest_sample: HypotheticalPerformanceSampleResponse | None
+    gain_loss_percent: float | None
+    comparison_vs_no_action_percent: float | None
+    thesis_direction_correct: bool | None
+    days_to_realize: int | None

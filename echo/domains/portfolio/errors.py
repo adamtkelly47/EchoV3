@@ -83,3 +83,32 @@ class IPSValidationError(EchoError):
     retryable = False
     severity = Severity.LOW
     http_status = 400
+
+
+class HypotheticalTradeNotFoundError(EchoError):
+    code = "hypothetical_trade_not_found"
+    retryable = False
+    severity = Severity.LOW
+    http_status = 404
+
+
+class HypotheticalTradeAlreadyClosedError(EchoError):
+    """PROMPT.md Phase 27 capability 8: a review is a one-time, terminal
+    event — mirrors domains/system/errors.py's own
+    HallucinationIncidentAlreadyResolvedError precedent."""
+
+    code = "hypothetical_trade_already_closed"
+    retryable = False
+    severity = Severity.LOW
+    http_status = 409
+
+
+class QuotePriceUnavailableError(EchoError):
+    """A hypothetical trade needs a real reference price at proposal time
+    and at every performance sample — this codebase never invents or
+    estimates one when the provider returns none."""
+
+    code = "quote_price_unavailable"
+    retryable = True
+    severity = Severity.MEDIUM
+    http_status = 502

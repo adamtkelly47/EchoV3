@@ -5,14 +5,17 @@ import pytest
 from core.errors import ProviderUnavailableError
 from core.time import FakeClock
 from domains.portfolio.errors import (
+    HypotheticalTradeAlreadyClosedError,
+    HypotheticalTradeNotFoundError,
     IPSValidationError,
     NoActiveIPSError,
     PortfolioSnapshotNotFoundError,
+    QuotePriceUnavailableError,
     SchwabCredentialNotFoundError,
     SchwabReauthorizationRequiredError,
     SchwabTokenRefreshError,
 )
-from domains.portfolio.models import AssetType
+from domains.portfolio.models import AssetType, HypotheticalTradeAction, HypotheticalTradeStatus
 from domains.portfolio.schemas import AllocationRange, ConcentrationRule, RestrictedSecurity
 from domains.portfolio.service import PortfolioService
 from infrastructure.secrets.encryption import SecretCipher
@@ -20,6 +23,7 @@ from tests.unit.domains.portfolio.fakes import (
     FakeAuditRepository,
     FakeComplianceResultRepository,
     FakeComputedValueRecordRepository,
+    FakeHypotheticalTradeRepository,
     FakeIPSRepository,
     FakePortfolioRepository,
     FakeSchwabCredentialRepository,
@@ -56,6 +60,7 @@ def _service(
         FakeComputedValueRecordRepository(),
         ips_repo,
         FakeComplianceResultRepository(),
+        FakeHypotheticalTradeRepository(),
     )
     return service, provider, portfolio_repo, credentials, ips_repo
 
@@ -503,3 +508,195 @@ async def test_updating_ips_does_not_rewrite_a_historical_compliance_result() ->
     assert unchanged is not None
     assert unchanged.concentration_rule.max_position_percent == 25.0
     assert first_result.ips_version_id == first_ips.version_id
+
+
+# --- PROMPT.md Phase 27: paper trading observation. No test here (or
+# anywhere in domains/portfolio/service.py) ever calls an order/execute
+# method — none exists to call. ---
+
+
+async def test_propose_hypothetical_trade_uses_a_real_just_fetched_quote() -> None:
+    service, provider, _, _, _ = _service()
+    await _connect(service)
+    provider.quotes_response = {"AAPL": {"quote": {"lastPrice": 150.0}}}
+
+    trade = await service.propose_hypothetical_trade(
+        "user_1",
+        symbol="AAPL",
+        action=HypotheticalTradeAction.BUY,
+        quantity=10,
+        rationale="Strong earnings beat expected next quarter",
+        expected_outcome="Price rises at least 5% within 30 days",
+        expected_horizon_days=30,
+        rationale_references=["thesis_123"],
+    )
+    assert trade.hypothetical_price == 150.0
+    assert trade.status == HypotheticalTradeStatus.OPEN
+    assert trade.rationale_references == ["thesis_123"]
+
+
+async def test_propose_hypothetical_trade_raises_when_no_price_available() -> None:
+    service, provider, _, _, _ = _service()
+    await _connect(service)
+    provider.quotes_response = {"AAPL": {"quote": {}}}
+
+    with pytest.raises(QuotePriceUnavailableError):
+        await service.propose_hypothetical_trade(
+            "user_1",
+            symbol="AAPL",
+            action=HypotheticalTradeAction.BUY,
+            quantity=10,
+            rationale="r",
+            expected_outcome="e",
+            expected_horizon_days=30,
+        )
+
+
+async def test_record_hypothetical_performance_sample_computes_real_gain_loss() -> None:
+    service, provider, _, _, _ = _service()
+    await _connect(service)
+    provider.quotes_response = {"AAPL": {"quote": {"lastPrice": 100.0}}}
+    trade = await service.propose_hypothetical_trade(
+        "user_1",
+        symbol="AAPL",
+        action=HypotheticalTradeAction.BUY,
+        quantity=10,
+        rationale="r",
+        expected_outcome="e",
+        expected_horizon_days=30,
+    )
+
+    provider.quotes_response = {"AAPL": {"quote": {"lastPrice": 110.0}}}
+    sample = await service.record_hypothetical_performance_sample(trade.trade_id)
+    assert sample.price == 110.0
+    assert sample.gain_loss_percent == pytest.approx(10.0)
+
+
+async def test_close_hypothetical_trade_requires_a_review_note_and_is_terminal() -> None:
+    """PROMPT.md Phase 27 capability 8: "review failures.\" """
+    service, provider, _, _, _ = _service()
+    await _connect(service)
+    provider.quotes_response = {"AAPL": {"quote": {"lastPrice": 100.0}}}
+    trade = await service.propose_hypothetical_trade(
+        "user_1",
+        symbol="AAPL",
+        action=HypotheticalTradeAction.BUY,
+        quantity=10,
+        rationale="r",
+        expected_outcome="e",
+        expected_horizon_days=30,
+    )
+
+    provider.quotes_response = {"AAPL": {"quote": {"lastPrice": 90.0}}}
+    closed = await service.close_hypothetical_trade(
+        trade.trade_id, review_note="Thesis did not play out — earnings missed"
+    )
+    assert closed.status == HypotheticalTradeStatus.CLOSED
+    assert closed.closing_price == 90.0
+    assert closed.review_note == "Thesis did not play out — earnings missed"
+
+    with pytest.raises(HypotheticalTradeAlreadyClosedError):
+        await service.close_hypothetical_trade(trade.trade_id, review_note="again")
+
+
+async def test_get_hypothetical_trade_raises_when_missing() -> None:
+    service, _, _, _, _ = _service()
+    with pytest.raises(HypotheticalTradeNotFoundError):
+        await service.get_hypothetical_trade("does-not-exist")
+
+
+async def test_list_hypothetical_trades_for_user_scopes_correctly() -> None:
+    service, provider, _, _, _ = _service()
+    await _connect(service)
+    await _connect(service, user_id="user_2")
+    provider.quotes_response = {"AAPL": {"quote": {"lastPrice": 100.0}}}
+    await service.propose_hypothetical_trade(
+        "user_1",
+        symbol="AAPL",
+        action=HypotheticalTradeAction.BUY,
+        quantity=10,
+        rationale="r",
+        expected_outcome="e",
+        expected_horizon_days=30,
+    )
+    await service.propose_hypothetical_trade(
+        "user_2",
+        symbol="AAPL",
+        action=HypotheticalTradeAction.BUY,
+        quantity=10,
+        rationale="r",
+        expected_outcome="e",
+        expected_horizon_days=30,
+    )
+    trades = await service.list_hypothetical_trades_for_user("user_1")
+    assert len(trades) == 1
+    assert trades[0].user_id == "user_1"
+
+
+async def test_evaluate_hypothetical_trade_compares_against_no_action_and_thesis_quality() -> None:
+    """PROMPT.md Phase 27 capabilities 5-7: "compare against no action,"
+    "measure thesis quality," "measure timing.\" """
+    service, provider, _, _, _ = _service()
+    await _connect(service)
+    provider.quotes_response = {"AAPL": {"quote": {"lastPrice": 100.0}}}
+    trade = await service.propose_hypothetical_trade(
+        "user_1",
+        symbol="AAPL",
+        action=HypotheticalTradeAction.BUY,
+        quantity=10,
+        rationale="r",
+        expected_outcome="e",
+        expected_horizon_days=30,
+    )
+
+    provider.quotes_response = {"AAPL": {"quote": {"lastPrice": 108.0}}}
+    await service.record_hypothetical_performance_sample(trade.trade_id)
+
+    evaluation = await service.evaluate_hypothetical_trade(trade.trade_id)
+    assert evaluation.gain_loss_percent == pytest.approx(8.0)
+    assert evaluation.comparison_vs_no_action_percent == pytest.approx(8.0)
+    assert evaluation.thesis_direction_correct is True
+    assert evaluation.days_to_realize == 0
+
+
+async def test_evaluate_hypothetical_trade_with_no_samples_is_honestly_unknown() -> None:
+    service, provider, _, _, _ = _service()
+    await _connect(service)
+    provider.quotes_response = {"AAPL": {"quote": {"lastPrice": 100.0}}}
+    trade = await service.propose_hypothetical_trade(
+        "user_1",
+        symbol="AAPL",
+        action=HypotheticalTradeAction.BUY,
+        quantity=10,
+        rationale="r",
+        expected_outcome="e",
+        expected_horizon_days=30,
+    )
+
+    evaluation = await service.evaluate_hypothetical_trade(trade.trade_id)
+    assert evaluation.gain_loss_percent is None
+    assert evaluation.thesis_direction_correct is None
+    assert evaluation.days_to_realize is None
+
+
+async def test_evaluate_hypothetical_trade_after_close_uses_the_closing_price() -> None:
+    service, provider, _, _, _ = _service()
+    await _connect(service)
+    provider.quotes_response = {"AAPL": {"quote": {"lastPrice": 100.0}}}
+    trade = await service.propose_hypothetical_trade(
+        "user_1",
+        symbol="AAPL",
+        action=HypotheticalTradeAction.SELL,
+        quantity=10,
+        rationale="r",
+        expected_outcome="e",
+        expected_horizon_days=30,
+    )
+
+    provider.quotes_response = {"AAPL": {"quote": {"lastPrice": 85.0}}}
+    closed = await service.close_hypothetical_trade(trade.trade_id, review_note="thesis played out")
+    assert closed.closing_price == 85.0
+
+    evaluation = await service.evaluate_hypothetical_trade(trade.trade_id)
+    assert evaluation.gain_loss_percent == pytest.approx(15.0)
+    assert evaluation.thesis_direction_correct is True

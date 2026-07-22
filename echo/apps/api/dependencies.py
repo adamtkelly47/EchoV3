@@ -54,6 +54,7 @@ from domains.memory.repository import PostgresMemoryRepository
 from domains.memory.service import MemoryService
 from domains.portfolio.repository import (
     PostgresComplianceResultRepository,
+    PostgresHypotheticalTradeRepository,
     PostgresIPSRepository,
     PostgresPortfolioRepository,
     PostgresSchwabCredentialRepository,
@@ -238,6 +239,7 @@ def get_portfolio_service(
         PostgresComputedValueRecordRepository(session),
         PostgresIPSRepository(session),
         PostgresComplianceResultRepository(session),
+        PostgresHypotheticalTradeRepository(session),
     )
 
 

@@ -7,15 +7,18 @@ from domains.portfolio.errors import (
     SchwabOAuthStateInvalidError,
     SchwabRedirectValueInvalidError,
 )
-from domains.portfolio.models import AssetType
+from domains.portfolio.models import AssetType, HypotheticalTradeAction
 from domains.portfolio.policies import (
     build_snapshot,
+    compare_against_no_action,
     compute_asset_class_exposure,
     compute_concentration_warnings,
     compute_cross_account_exposure,
     compute_gain_loss,
+    compute_hypothetical_gain_loss_percent,
     compute_position_weights,
     compute_sector_exposure,
+    days_to_realize,
     evaluate_compliance,
     extract_code_from_redirect,
     generate_oauth_state,
@@ -29,6 +32,7 @@ from domains.portfolio.policies import (
     parse_price_history,
     parse_quote,
     reconcile,
+    thesis_direction_correct,
     validate_ips_rules,
     verify_oauth_state,
 )
@@ -36,6 +40,7 @@ from domains.portfolio.schemas import (
     AccountBalance,
     AllocationRange,
     ConcentrationRule,
+    HypotheticalPerformanceSample,
     IPSVersion,
     Position,
     RestrictedSecurity,
@@ -625,3 +630,113 @@ def test_evaluate_compliance_scopes_to_ips_account_ids() -> None:
         )
     ]
     assert evaluate_compliance(ips, positions, balances) == []
+
+
+# --- PROMPT.md Phase 27: paper trading observation ---
+
+
+def test_buy_thesis_profits_when_price_rises() -> None:
+    percent = compute_hypothetical_gain_loss_percent(
+        HypotheticalTradeAction.BUY, hypothetical_price=100.0, current_price=110.0
+    )
+    assert percent == pytest.approx(10.0)
+
+
+def test_buy_thesis_loses_when_price_falls() -> None:
+    percent = compute_hypothetical_gain_loss_percent(
+        HypotheticalTradeAction.BUY, hypothetical_price=100.0, current_price=90.0
+    )
+    assert percent == pytest.approx(-10.0)
+
+
+def test_sell_thesis_profits_when_price_falls() -> None:
+    percent = compute_hypothetical_gain_loss_percent(
+        HypotheticalTradeAction.SELL, hypothetical_price=100.0, current_price=90.0
+    )
+    assert percent == pytest.approx(10.0)
+
+
+def test_sell_thesis_loses_when_price_rises() -> None:
+    percent = compute_hypothetical_gain_loss_percent(
+        HypotheticalTradeAction.SELL, hypothetical_price=100.0, current_price=110.0
+    )
+    assert percent == pytest.approx(-10.0)
+
+
+def test_compare_against_no_action_is_the_gain_loss_itself() -> None:
+    """PROMPT.md Phase 27 capability 5: "no action" is the literal 0%
+    baseline of never having entered the position — not a market
+    benchmark."""
+    assert compare_against_no_action(7.5) == pytest.approx(7.5)
+    assert compare_against_no_action(-3.0) == pytest.approx(-3.0)
+
+
+def test_thesis_direction_correct_for_buy() -> None:
+    assert thesis_direction_correct(HypotheticalTradeAction.BUY, 100.0, 105.0) is True
+    assert thesis_direction_correct(HypotheticalTradeAction.BUY, 100.0, 95.0) is False
+
+
+def test_thesis_direction_correct_for_sell() -> None:
+    assert thesis_direction_correct(HypotheticalTradeAction.SELL, 100.0, 95.0) is True
+    assert thesis_direction_correct(HypotheticalTradeAction.SELL, 100.0, 105.0) is False
+
+
+def test_days_to_realize_finds_the_first_sample_where_thesis_holds() -> None:
+    """PROMPT.md Phase 27 capability 7: "measure timing.\" """
+    proposed_at = datetime(2026, 1, 1, tzinfo=UTC)
+    samples = [
+        HypotheticalPerformanceSample(
+            trade_id="t1",
+            observed_at=datetime(2026, 1, 2, tzinfo=UTC),
+            price=98.0,
+            gain_loss_percent=-2.0,
+        ),
+        HypotheticalPerformanceSample(
+            trade_id="t1",
+            observed_at=datetime(2026, 1, 5, tzinfo=UTC),
+            price=101.0,
+            gain_loss_percent=1.0,
+        ),
+        HypotheticalPerformanceSample(
+            trade_id="t1",
+            observed_at=datetime(2026, 1, 10, tzinfo=UTC),
+            price=105.0,
+            gain_loss_percent=5.0,
+        ),
+    ]
+    days = days_to_realize(HypotheticalTradeAction.BUY, 100.0, proposed_at, samples)
+    assert days == 4  # Jan 5th, the first day price actually exceeded 100
+
+
+def test_days_to_realize_ignores_sample_order() -> None:
+    proposed_at = datetime(2026, 1, 1, tzinfo=UTC)
+    samples = [
+        HypotheticalPerformanceSample(
+            trade_id="t1",
+            observed_at=datetime(2026, 1, 10, tzinfo=UTC),
+            price=105.0,
+            gain_loss_percent=5.0,
+        ),
+        HypotheticalPerformanceSample(
+            trade_id="t1",
+            observed_at=datetime(2026, 1, 5, tzinfo=UTC),
+            price=101.0,
+            gain_loss_percent=1.0,
+        ),
+    ]
+    days = days_to_realize(HypotheticalTradeAction.BUY, 100.0, proposed_at, samples)
+    assert days == 4
+
+
+def test_days_to_realize_returns_none_when_thesis_never_holds() -> None:
+    proposed_at = datetime(2026, 1, 1, tzinfo=UTC)
+    samples = [
+        HypotheticalPerformanceSample(
+            trade_id="t1",
+            observed_at=datetime(2026, 1, 2, tzinfo=UTC),
+            price=95.0,
+            gain_loss_percent=-5.0,
+        ),
+    ]
+    days = days_to_realize(HypotheticalTradeAction.BUY, 100.0, proposed_at, samples)
+    assert days is None

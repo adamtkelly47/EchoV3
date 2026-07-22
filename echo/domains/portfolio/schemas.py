@@ -14,7 +14,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from core.identifiers import new_id
-from domains.portfolio.models import AssetType
+from domains.portfolio.models import AssetType, HypotheticalTradeAction, HypotheticalTradeStatus
 
 
 class SchwabCredential(BaseModel):
@@ -267,3 +267,62 @@ class ComplianceResult(BaseModel):
     evaluated_at: datetime
     compliant: bool
     breaches: list[ComplianceBreach] = Field(default_factory=list)
+
+
+class HypotheticalTrade(BaseModel):
+    """PROMPT.md Phase 27 capabilities 1-3: "create hypothetical trade
+    proposals," "record rationale," "record expected outcome." No order
+    endpoint exists anywhere in this codebase (PROMPT.md Phase 12
+    verification 5, restated for this phase) — this schema has no path to
+    execution: no target_system, no required_permission, nothing an
+    ApprovalService/WriteAdapter could ever consume. `rationale_references`
+    follows Research's own "claim + supporting evidence, never isolated"
+    discipline (e.g. NewsDigest.article_ids) rather than free-text with no
+    attribution — a loose reference by id only, since Portfolio must never
+    import domains.research directly (no-domain-to-domain-imports)."""
+
+    trade_id: str = Field(default_factory=lambda: new_id("hypotrade"))
+    user_id: str
+    symbol: str
+    action: HypotheticalTradeAction
+    quantity: float
+    hypothetical_price: float
+    rationale: str
+    rationale_references: list[str] = Field(default_factory=list)
+    expected_outcome: str
+    expected_horizon_days: int
+    proposed_at: datetime
+    status: HypotheticalTradeStatus = HypotheticalTradeStatus.OPEN
+    review_note: str | None = None
+    reviewed_at: datetime | None = None
+    closing_price: float | None = None
+
+
+class HypotheticalPerformanceSample(BaseModel):
+    """PROMPT.md Phase 27 capability 4: "track hypothetical performance."
+    Immutable and append-only, one row per observation — matching
+    `PortfolioSnapshot`/`EvaluationRun`'s own "a correction is a new
+    record" discipline used throughout this codebase, never an
+    overwritten single "current value" field."""
+
+    sample_id: str = Field(default_factory=lambda: new_id("hypoperf"))
+    trade_id: str
+    observed_at: datetime
+    price: float
+    gain_loss_percent: float
+
+
+class HypotheticalTradeEvaluation(BaseModel):
+    """PROMPT.md Phase 27 capabilities 5-7: "compare against no action,"
+    "measure thesis quality," "measure timing." Computed fresh from the
+    trade and its stored performance samples on every read
+    (`domains/portfolio/policies.py`'s pure functions) — never itself a
+    stored fact, the same "computed, not asserted" discipline `Compliance
+    Result`/`MoneyDashboard` already follow."""
+
+    trade: HypotheticalTrade
+    latest_sample: HypotheticalPerformanceSample | None
+    gain_loss_percent: float | None
+    comparison_vs_no_action_percent: float | None
+    thesis_direction_correct: bool | None
+    days_to_realize: int | None

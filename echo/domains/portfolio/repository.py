@@ -22,7 +22,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
-from domains.portfolio.models import AssetType
+from domains.portfolio.models import AssetType, HypotheticalTradeAction, HypotheticalTradeStatus
 from domains.portfolio.schemas import (
     Account,
     AccountBalance,
@@ -30,6 +30,8 @@ from domains.portfolio.schemas import (
     ComplianceBreach,
     ComplianceResult,
     ConcentrationRule,
+    HypotheticalPerformanceSample,
+    HypotheticalTrade,
     IPSVersion,
     PortfolioSnapshot,
     Position,
@@ -145,6 +147,36 @@ class ComplianceResultRow(Base):
     breaches: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list)
 
 
+class HypotheticalTradeRow(Base):
+    __tablename__ = "portfolio_hypothetical_trades"
+
+    trade_id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String, index=True)
+    symbol: Mapped[str] = mapped_column(String, index=True)
+    action: Mapped[str] = mapped_column(String)
+    quantity: Mapped[float] = mapped_column(Float)
+    hypothetical_price: Mapped[float] = mapped_column(Float)
+    rationale: Mapped[str] = mapped_column(String)
+    rationale_references: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    expected_outcome: Mapped[str] = mapped_column(String)
+    expected_horizon_days: Mapped[int] = mapped_column(Integer)
+    proposed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String, index=True)
+    review_note: Mapped[str | None] = mapped_column(String)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    closing_price: Mapped[float | None] = mapped_column(Float)
+
+
+class HypotheticalPerformanceSampleRow(Base):
+    __tablename__ = "portfolio_hypothetical_performance_samples"
+
+    sample_id: Mapped[str] = mapped_column(String, primary_key=True)
+    trade_id: Mapped[str] = mapped_column(String, index=True)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    price: Mapped[float] = mapped_column(Float)
+    gain_loss_percent: Mapped[float] = mapped_column(Float)
+
+
 def _row_to_ips_version(row: IPSVersionRow) -> IPSVersion:
     return IPSVersion(
         version_id=row.version_id,
@@ -169,6 +201,38 @@ def _row_to_compliance_result(row: ComplianceResultRow) -> ComplianceResult:
         evaluated_at=row.evaluated_at,
         compliant=row.compliant,
         breaches=[ComplianceBreach(**b) for b in row.breaches],
+    )
+
+
+def _row_to_hypothetical_trade(row: HypotheticalTradeRow) -> HypotheticalTrade:
+    return HypotheticalTrade(
+        trade_id=row.trade_id,
+        user_id=row.user_id,
+        symbol=row.symbol,
+        action=HypotheticalTradeAction(row.action),
+        quantity=row.quantity,
+        hypothetical_price=row.hypothetical_price,
+        rationale=row.rationale,
+        rationale_references=list(row.rationale_references),
+        expected_outcome=row.expected_outcome,
+        expected_horizon_days=row.expected_horizon_days,
+        proposed_at=row.proposed_at,
+        status=HypotheticalTradeStatus(row.status),
+        review_note=row.review_note,
+        reviewed_at=row.reviewed_at,
+        closing_price=row.closing_price,
+    )
+
+
+def _row_to_hypothetical_performance_sample(
+    row: HypotheticalPerformanceSampleRow,
+) -> HypotheticalPerformanceSample:
+    return HypotheticalPerformanceSample(
+        sample_id=row.sample_id,
+        trade_id=row.trade_id,
+        observed_at=row.observed_at,
+        price=row.price,
+        gain_loss_percent=row.gain_loss_percent,
     )
 
 
@@ -203,6 +267,18 @@ class IPSRepository(Protocol):
 class ComplianceResultRepository(Protocol):
     async def save(self, result: ComplianceResult) -> None: ...
     async def get_latest(self, user_id: str) -> ComplianceResult | None: ...
+
+
+class HypotheticalTradeRepository(Protocol):
+    async def save_trade(self, trade: HypotheticalTrade) -> HypotheticalTrade: ...
+    async def get_trade(self, trade_id: str) -> HypotheticalTrade | None: ...
+    async def list_trades_for_user(self, user_id: str) -> list[HypotheticalTrade]: ...
+    async def save_performance_sample(
+        self, sample: HypotheticalPerformanceSample
+    ) -> HypotheticalPerformanceSample: ...
+    async def list_performance_samples(
+        self, trade_id: str
+    ) -> list[HypotheticalPerformanceSample]: ...
 
 
 class PostgresSchwabCredentialRepository:
@@ -588,3 +664,69 @@ class PostgresComplianceResultRepository:
         )
         row = result.scalar_one_or_none()
         return _row_to_compliance_result(row) if row is not None else None
+
+
+class PostgresHypotheticalTradeRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def save_trade(self, trade: HypotheticalTrade) -> HypotheticalTrade:
+        row = await self._session.get(HypotheticalTradeRow, trade.trade_id)
+        if row is None:
+            row = HypotheticalTradeRow(
+                trade_id=trade.trade_id,
+                user_id=trade.user_id,
+                symbol=trade.symbol,
+                action=trade.action.value,
+                quantity=trade.quantity,
+                hypothetical_price=trade.hypothetical_price,
+                rationale=trade.rationale,
+                rationale_references=list(trade.rationale_references),
+                expected_outcome=trade.expected_outcome,
+                expected_horizon_days=trade.expected_horizon_days,
+                proposed_at=trade.proposed_at,
+            )
+            self._session.add(row)
+        row.status = trade.status.value
+        row.review_note = trade.review_note
+        row.reviewed_at = trade.reviewed_at
+        row.closing_price = trade.closing_price
+        await self._session.flush()
+        return trade
+
+    async def get_trade(self, trade_id: str) -> HypotheticalTrade | None:
+        row = await self._session.get(HypotheticalTradeRow, trade_id)
+        return _row_to_hypothetical_trade(row) if row is not None else None
+
+    async def list_trades_for_user(self, user_id: str) -> list[HypotheticalTrade]:
+        result = await self._session.execute(
+            select(HypotheticalTradeRow)
+            .where(HypotheticalTradeRow.user_id == user_id)
+            .order_by(HypotheticalTradeRow.proposed_at.desc())
+        )
+        return [_row_to_hypothetical_trade(row) for row in result.scalars().all()]
+
+    async def save_performance_sample(
+        self, sample: HypotheticalPerformanceSample
+    ) -> HypotheticalPerformanceSample:
+        # Immutable/append-only (Docs/DATA_MODEL.md) — matching
+        # PortfolioSnapshot/EvaluationRun's own precedent.
+        self._session.add(
+            HypotheticalPerformanceSampleRow(
+                sample_id=sample.sample_id,
+                trade_id=sample.trade_id,
+                observed_at=sample.observed_at,
+                price=sample.price,
+                gain_loss_percent=sample.gain_loss_percent,
+            )
+        )
+        await self._session.flush()
+        return sample
+
+    async def list_performance_samples(self, trade_id: str) -> list[HypotheticalPerformanceSample]:
+        result = await self._session.execute(
+            select(HypotheticalPerformanceSampleRow)
+            .where(HypotheticalPerformanceSampleRow.trade_id == trade_id)
+            .order_by(HypotheticalPerformanceSampleRow.observed_at.asc())
+        )
+        return [_row_to_hypothetical_performance_sample(row) for row in result.scalars().all()]

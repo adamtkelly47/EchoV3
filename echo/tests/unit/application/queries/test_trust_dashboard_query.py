@@ -22,6 +22,7 @@ from tests.unit.domains.portfolio.fakes import FakeAuditRepository as FakePortfo
 from tests.unit.domains.portfolio.fakes import (
     FakeComplianceResultRepository,
     FakeComputedValueRecordRepository,
+    FakeHypotheticalTradeRepository,
     FakeIPSRepository,
     FakePortfolioRepository,
     FakeSchwabCredentialRepository,
@@ -60,6 +61,7 @@ def _query_service(
         FakeComputedValueRecordRepository(),
         FakeIPSRepository(),
         FakeComplianceResultRepository(),
+        FakeHypotheticalTradeRepository(),
     )
     system = SystemService(FakeSystemRepository(), FakeSystemOwnAuditRepository(), clock)
     audit = FakeObservabilityAuditRepository()

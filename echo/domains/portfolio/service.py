@@ -25,20 +25,27 @@ from core.identifiers import new_id
 from core.provenance import ComputedValueRecord, SourceRecord, ValidationStatus
 from core.time import Clock
 from domains.portfolio.errors import (
+    HypotheticalTradeAlreadyClosedError,
+    HypotheticalTradeNotFoundError,
     NoActiveIPSError,
     PortfolioSnapshotNotFoundError,
+    QuotePriceUnavailableError,
     SchwabCredentialNotFoundError,
     SchwabReauthorizationRequiredError,
     SchwabTokenRefreshError,
 )
+from domains.portfolio.models import HypotheticalTradeAction, HypotheticalTradeStatus
 from domains.portfolio.policies import (
     build_snapshot,
+    compare_against_no_action,
     compute_asset_class_exposure,
     compute_concentration_warnings,
     compute_cross_account_exposure,
     compute_gain_loss,
+    compute_hypothetical_gain_loss_percent,
     compute_position_weights,
     compute_sector_exposure,
+    days_to_realize,
     evaluate_compliance,
     extract_code_from_redirect,
     generate_oauth_state,
@@ -51,11 +58,13 @@ from domains.portfolio.policies import (
     parse_price_history,
     parse_quote,
     reconcile,
+    thesis_direction_correct,
     validate_ips_rules,
     verify_oauth_state,
 )
 from domains.portfolio.repository import (
     ComplianceResultRepository,
+    HypotheticalTradeRepository,
     IPSRepository,
     PortfolioRepository,
     SchwabCredentialRepository,
@@ -65,6 +74,9 @@ from domains.portfolio.schemas import (
     AllocationRange,
     ComplianceResult,
     ConcentrationRule,
+    HypotheticalPerformanceSample,
+    HypotheticalTrade,
+    HypotheticalTradeEvaluation,
     IPSVersion,
     MoneyDashboard,
     PortfolioSnapshot,
@@ -105,6 +117,7 @@ class PortfolioService:
         computed_values: ComputedValueRecordRepository,
         ips: IPSRepository,
         compliance_results: ComplianceResultRepository,
+        hypothetical_trades: HypotheticalTradeRepository,
     ) -> None:
         self._credentials = credentials
         self._portfolio = portfolio
@@ -117,6 +130,7 @@ class PortfolioService:
         self._computed_values = computed_values
         self._ips = ips
         self._compliance_results = compliance_results
+        self._hypothetical_trades = hypothetical_trades
 
     def start_authorization(self, user_id: str) -> str:
         state = generate_oauth_state(user_id, new_id(), self._clock.now_utc(), self._state_secret)
@@ -433,6 +447,166 @@ class PortfolioService:
         (call `evaluate_ips_compliance` explicitly for that, mirroring
         `sync`/`get_dashboard`'s own read/write split)."""
         return await self._compliance_results.get_latest(user_id)
+
+    # --- PROMPT.md Phase 27: paper trading observation. No method here (or
+    # anywhere else in this service, this Protocol, or providers/schwab/
+    # adapter.py) ever places, modifies, or cancels a real order — the same
+    # "No trading endpoint is implemented... enforced by omission" guarantee
+    # this module's own docstring already states for Phase 12, restated
+    # here because it applies with equal force to this phase's own new
+    # methods: they only ever call `get_quotes` (an existing, already-real
+    # read-only market-data call), never anything execution-capable. ---
+
+    async def propose_hypothetical_trade(
+        self,
+        user_id: str,
+        *,
+        symbol: str,
+        action: HypotheticalTradeAction,
+        quantity: float,
+        rationale: str,
+        expected_outcome: str,
+        expected_horizon_days: int,
+        rationale_references: list[str] | None = None,
+    ) -> HypotheticalTrade:
+        """PROMPT.md Phase 27 capabilities 1-3: "create hypothetical trade
+        proposals," "record rationale," "record expected outcome." The
+        reference price is a real, just-fetched quote — never a
+        user-supplied or invented number — so every subsequent performance
+        calculation traces back to an actual market observation."""
+        price = await self._require_current_price(user_id, symbol)
+        trade = HypotheticalTrade(
+            user_id=user_id,
+            symbol=symbol,
+            action=action,
+            quantity=quantity,
+            hypothetical_price=price,
+            rationale=rationale,
+            rationale_references=rationale_references or [],
+            expected_outcome=expected_outcome,
+            expected_horizon_days=expected_horizon_days,
+            proposed_at=self._clock.now_utc(),
+        )
+        await self._hypothetical_trades.save_trade(trade)
+        await self._audit.record(
+            action="portfolio.hypothetical_trade_proposed",
+            result="success",
+            detail={"trade_id": trade.trade_id, "symbol": symbol, "action": action.value},
+        )
+        return trade
+
+    async def get_hypothetical_trade(self, trade_id: str) -> HypotheticalTrade:
+        return await self._require_hypothetical_trade(trade_id)
+
+    async def list_hypothetical_trades_for_user(self, user_id: str) -> list[HypotheticalTrade]:
+        return await self._hypothetical_trades.list_trades_for_user(user_id)
+
+    async def record_hypothetical_performance_sample(
+        self, trade_id: str
+    ) -> HypotheticalPerformanceSample:
+        """PROMPT.md Phase 27 capability 4: "track hypothetical
+        performance." One real market observation at a time — on demand,
+        matching Phase 24's own "on-demand evaluate" precedent, rather than
+        a new monitor type built ahead of any demonstrated need for one."""
+        trade = await self._require_hypothetical_trade(trade_id)
+        price = await self._require_current_price(trade.user_id, trade.symbol)
+        now = self._clock.now_utc()
+        sample = HypotheticalPerformanceSample(
+            trade_id=trade_id,
+            observed_at=now,
+            price=price,
+            gain_loss_percent=compute_hypothetical_gain_loss_percent(
+                trade.action, trade.hypothetical_price, price
+            ),
+        )
+        await self._hypothetical_trades.save_performance_sample(sample)
+        return sample
+
+    async def close_hypothetical_trade(
+        self, trade_id: str, *, review_note: str
+    ) -> HypotheticalTrade:
+        """PROMPT.md Phase 27 capability 8: "review failures." A one-time,
+        terminal transition — a human's own assessment of what actually
+        happened, recorded alongside the real closing price, never
+        overwritten."""
+        trade = await self._require_hypothetical_trade(trade_id)
+        if trade.status == HypotheticalTradeStatus.CLOSED:
+            raise HypotheticalTradeAlreadyClosedError(
+                f"hypothetical trade {trade_id!r} is already closed"
+            )
+        closing_price = await self._require_current_price(trade.user_id, trade.symbol)
+        closed = trade.model_copy(
+            update={
+                "status": HypotheticalTradeStatus.CLOSED,
+                "review_note": review_note,
+                "reviewed_at": self._clock.now_utc(),
+                "closing_price": closing_price,
+            }
+        )
+        await self._hypothetical_trades.save_trade(closed)
+        await self._audit.record(
+            action="portfolio.hypothetical_trade_closed",
+            result="success",
+            detail={"trade_id": trade_id},
+        )
+        return closed
+
+    async def evaluate_hypothetical_trade(self, trade_id: str) -> HypotheticalTradeEvaluation:
+        """PROMPT.md Phase 27 capabilities 5-7: "compare against no
+        action," "measure thesis quality," "measure timing." Computed
+        fresh from the trade and its stored samples on every call — never
+        itself a stored fact, matching `MoneyDashboard`/`ComplianceResult`'s
+        own "computed, not asserted" discipline. Once a trade is closed,
+        its recorded `closing_price` is the authoritative final
+        observation; while still open, the latest performance sample is."""
+        trade = await self._require_hypothetical_trade(trade_id)
+        samples = await self._hypothetical_trades.list_performance_samples(trade_id)
+        latest_sample = max(samples, key=lambda s: s.observed_at) if samples else None
+
+        reference_price = (
+            trade.closing_price
+            if trade.closing_price is not None
+            else (latest_sample.price if latest_sample is not None else None)
+        )
+        gain_loss_percent = (
+            compute_hypothetical_gain_loss_percent(
+                trade.action, trade.hypothetical_price, reference_price
+            )
+            if reference_price is not None
+            else None
+        )
+        return HypotheticalTradeEvaluation(
+            trade=trade,
+            latest_sample=latest_sample,
+            gain_loss_percent=gain_loss_percent,
+            comparison_vs_no_action_percent=(
+                compare_against_no_action(gain_loss_percent)
+                if gain_loss_percent is not None
+                else None
+            ),
+            thesis_direction_correct=(
+                thesis_direction_correct(trade.action, trade.hypothetical_price, reference_price)
+                if reference_price is not None
+                else None
+            ),
+            days_to_realize=days_to_realize(
+                trade.action, trade.hypothetical_price, trade.proposed_at, samples
+            ),
+        )
+
+    async def _require_current_price(self, user_id: str, symbol: str) -> float:
+        quotes = await self.get_quotes(user_id, [symbol])
+        if not quotes or quotes[0].price is None:
+            raise QuotePriceUnavailableError(f"no current price available for {symbol!r}")
+        return quotes[0].price
+
+    async def _require_hypothetical_trade(self, trade_id: str) -> HypotheticalTrade:
+        trade = await self._hypothetical_trades.get_trade(trade_id)
+        if trade is None:
+            raise HypotheticalTradeNotFoundError(
+                f"no hypothetical trade found with id {trade_id!r}"
+            )
+        return trade
 
     async def _store_raw_response(
         self, raw: dict[str, Any], *, provider: str, now: datetime

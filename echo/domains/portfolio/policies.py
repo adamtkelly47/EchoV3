@@ -32,7 +32,7 @@ from domains.portfolio.errors import (
     SchwabOAuthStateInvalidError,
     SchwabRedirectValueInvalidError,
 )
-from domains.portfolio.models import AssetType
+from domains.portfolio.models import AssetType, HypotheticalTradeAction
 from domains.portfolio.schemas import (
     Account,
     AccountBalance,
@@ -40,6 +40,7 @@ from domains.portfolio.schemas import (
     AssetClassExposure,
     ComplianceBreach,
     ConcentrationWarning,
+    HypotheticalPerformanceSample,
     IPSVersion,
     PortfolioSnapshot,
     Position,
@@ -597,3 +598,60 @@ def evaluate_compliance(
             )
 
     return breaches
+
+
+# --- PROMPT.md Phase 27: paper trading observation ---
+# Pure functions only — domains/portfolio/service.py fetches the real
+# quotes/samples; nothing here makes a network call or persists anything
+# (CONSTITUTION.md: Policy).
+
+
+def compute_hypothetical_gain_loss_percent(
+    action: HypotheticalTradeAction, hypothetical_price: float, current_price: float
+) -> float:
+    """PROMPT.md Phase 27 capability 4: "track hypothetical performance."
+    A BUY thesis profits when price rises; a SELL thesis profits when
+    price falls — the sign flip is the entire difference between the two
+    directions, computed here rather than left to each caller to get
+    right independently."""
+    direction = 1 if action == HypotheticalTradeAction.BUY else -1
+    return direction * (current_price - hypothetical_price) / hypothetical_price * 100
+
+
+def compare_against_no_action(gain_loss_percent: float) -> float:
+    """PROMPT.md Phase 27 capability 5: "compare against no action." The
+    literal "no action" baseline is 0% — never entering the position at
+    all, i.e. holding cash — not a market benchmark this codebase has no
+    real data source for. The comparison is simply how much better or
+    worse the hypothetical trade did than doing nothing."""
+    return gain_loss_percent - 0.0
+
+
+def thesis_direction_correct(
+    action: HypotheticalTradeAction, hypothetical_price: float, observed_price: float
+) -> bool:
+    """PROMPT.md Phase 27 capability 6: "measure thesis quality." A
+    deterministic, structural check — did price actually move in the
+    direction the trade's own `action` implied? — never a language
+    model's self-assessment of its own reasoning (CONSTITUTION.md:
+    calculations happen in code, not by asking a model to grade itself)."""
+    if action == HypotheticalTradeAction.BUY:
+        return observed_price > hypothetical_price
+    return observed_price < hypothetical_price
+
+
+def days_to_realize(
+    action: HypotheticalTradeAction,
+    hypothetical_price: float,
+    proposed_at: datetime,
+    samples: list[HypotheticalPerformanceSample],
+) -> int | None:
+    """PROMPT.md Phase 27 capability 7: "measure timing." The number of
+    days between proposing the trade and the first observed sample where
+    the thesis's direction was actually correct — `None` if it never was,
+    across every sample recorded so far. Samples are checked in
+    chronological order regardless of the order callers pass them in."""
+    for sample in sorted(samples, key=lambda s: s.observed_at):
+        if thesis_direction_correct(action, hypothetical_price, sample.price):
+            return (sample.observed_at - proposed_at).days
+    return None

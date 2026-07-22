@@ -7,6 +7,8 @@ from domains.portfolio.schemas import (
     Account,
     AccountBalance,
     ComplianceResult,
+    HypotheticalPerformanceSample,
+    HypotheticalTrade,
     IPSVersion,
     PortfolioSnapshot,
     Position,
@@ -130,6 +132,31 @@ class FakeComplianceResultRepository:
     async def get_latest(self, user_id: str) -> ComplianceResult | None:
         matches = [r for r in self.results if r.user_id == user_id]
         return matches[-1] if matches else None
+
+
+class FakeHypotheticalTradeRepository:
+    def __init__(self) -> None:
+        self.trades: dict[str, HypotheticalTrade] = {}
+        self.samples: list[HypotheticalPerformanceSample] = []
+
+    async def save_trade(self, trade: HypotheticalTrade) -> HypotheticalTrade:
+        self.trades[trade.trade_id] = trade
+        return trade
+
+    async def get_trade(self, trade_id: str) -> HypotheticalTrade | None:
+        return self.trades.get(trade_id)
+
+    async def list_trades_for_user(self, user_id: str) -> list[HypotheticalTrade]:
+        return [t for t in self.trades.values() if t.user_id == user_id]
+
+    async def save_performance_sample(
+        self, sample: HypotheticalPerformanceSample
+    ) -> HypotheticalPerformanceSample:
+        self.samples.append(sample)
+        return sample
+
+    async def list_performance_samples(self, trade_id: str) -> list[HypotheticalPerformanceSample]:
+        return [s for s in self.samples if s.trade_id == trade_id]
 
 
 class FakeSourceRecordRepository:

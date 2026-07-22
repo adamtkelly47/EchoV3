@@ -33,6 +33,7 @@ from tests.unit.domains.portfolio.fakes import FakeAuditRepository as FakePortfo
 from tests.unit.domains.portfolio.fakes import (
     FakeComplianceResultRepository,
     FakeComputedValueRecordRepository,
+    FakeHypotheticalTradeRepository,
     FakeIPSRepository,
     FakePortfolioRepository,
     FakeSchwabCredentialRepository,
@@ -82,6 +83,7 @@ def _orchestrator(
         FakeComputedValueRecordRepository(),
         FakeIPSRepository(),
         compliance_repo,
+        FakeHypotheticalTradeRepository(),
     )
     calendar_provider = FakeCalendarProvider()
     calendar = CalendarService(

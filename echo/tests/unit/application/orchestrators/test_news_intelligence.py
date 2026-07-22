@@ -20,6 +20,7 @@ from tests.unit.domains.portfolio.fakes import (
 from tests.unit.domains.portfolio.fakes import (
     FakeComplianceResultRepository,
     FakeComputedValueRecordRepository,
+    FakeHypotheticalTradeRepository,
     FakeIPSRepository,
     FakePortfolioRepository,
     FakeSchwabCredentialRepository,
@@ -72,6 +73,7 @@ def _portfolio_service(clock: FakeClock) -> tuple[PortfolioService, FakePortfoli
         FakeComputedValueRecordRepository(),
         FakeIPSRepository(),
         FakeComplianceResultRepository(),
+        FakeHypotheticalTradeRepository(),
     )
     return service, portfolio_repo
 

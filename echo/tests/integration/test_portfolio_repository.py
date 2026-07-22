@@ -1,10 +1,11 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from domains.portfolio.models import AssetType
+from domains.portfolio.models import AssetType, HypotheticalTradeAction, HypotheticalTradeStatus
 from domains.portfolio.repository import (
     PostgresComplianceResultRepository,
+    PostgresHypotheticalTradeRepository,
     PostgresIPSRepository,
     PostgresPortfolioRepository,
     PostgresSchwabCredentialRepository,
@@ -16,6 +17,8 @@ from domains.portfolio.schemas import (
     ComplianceBreach,
     ComplianceResult,
     ConcentrationRule,
+    HypotheticalPerformanceSample,
+    HypotheticalTrade,
     IPSVersion,
     PortfolioSnapshot,
     Position,
@@ -320,3 +323,128 @@ async def test_compliance_result_save_and_get_latest_round_trips(db_session: Asy
     assert latest.compliant is False
     assert latest.breaches[0].rule_type == "concentration"
     assert latest.breaches[0].detail["symbol"] == "AAPL"
+
+
+async def test_hypothetical_trade_save_and_get_round_trips(db_session: AsyncSession) -> None:
+    """PROMPT.md Phase 27 capabilities 1-3: "create hypothetical trade
+    proposals," "record rationale," "record expected outcome\" — proven
+    against real Postgres, not just the in-memory fake."""
+    repo = PostgresHypotheticalTradeRepository(db_session)
+    trade = HypotheticalTrade(
+        user_id="user_1",
+        symbol="AAPL",
+        action=HypotheticalTradeAction.BUY,
+        quantity=10,
+        hypothetical_price=150.0,
+        rationale="Strong earnings expected",
+        rationale_references=["thesis_123"],
+        expected_outcome="Price rises 5% within 30 days",
+        expected_horizon_days=30,
+        proposed_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    await repo.save_trade(trade)
+
+    fetched = await repo.get_trade(trade.trade_id)
+    assert fetched is not None
+    assert fetched.status == HypotheticalTradeStatus.OPEN
+    assert fetched.rationale_references == ["thesis_123"]
+
+
+async def test_hypothetical_trade_save_upserts_close_review(db_session: AsyncSession) -> None:
+    repo = PostgresHypotheticalTradeRepository(db_session)
+    trade = HypotheticalTrade(
+        user_id="user_1",
+        symbol="AAPL",
+        action=HypotheticalTradeAction.BUY,
+        quantity=10,
+        hypothetical_price=150.0,
+        rationale="r",
+        expected_outcome="e",
+        expected_horizon_days=30,
+        proposed_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    await repo.save_trade(trade)
+
+    closed = trade.model_copy(
+        update={
+            "status": HypotheticalTradeStatus.CLOSED,
+            "review_note": "Thesis played out",
+            "reviewed_at": datetime(2026, 2, 1, tzinfo=UTC),
+            "closing_price": 160.0,
+        }
+    )
+    await repo.save_trade(closed)
+
+    fetched = await repo.get_trade(trade.trade_id)
+    assert fetched is not None
+    assert fetched.status == HypotheticalTradeStatus.CLOSED
+    assert fetched.closing_price == 160.0
+    assert fetched.review_note == "Thesis played out"
+
+
+async def test_list_hypothetical_trades_for_user_scopes_correctly(
+    db_session: AsyncSession,
+) -> None:
+    repo = PostgresHypotheticalTradeRepository(db_session)
+    mine = HypotheticalTrade(
+        user_id="portfolio_repo_test_user_a",
+        symbol="AAPL",
+        action=HypotheticalTradeAction.BUY,
+        quantity=10,
+        hypothetical_price=150.0,
+        rationale="r",
+        expected_outcome="e",
+        expected_horizon_days=30,
+        proposed_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    other = HypotheticalTrade(
+        user_id="portfolio_repo_test_user_b",
+        symbol="AAPL",
+        action=HypotheticalTradeAction.BUY,
+        quantity=10,
+        hypothetical_price=150.0,
+        rationale="r",
+        expected_outcome="e",
+        expected_horizon_days=30,
+        proposed_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    await repo.save_trade(mine)
+    await repo.save_trade(other)
+
+    matches = await repo.list_trades_for_user("portfolio_repo_test_user_a")
+    assert [t.trade_id for t in matches] == [mine.trade_id]
+
+
+async def test_performance_sample_save_is_append_only_and_lists(db_session: AsyncSession) -> None:
+    """PROMPT.md Phase 27 capability 4: "track hypothetical performance.\" """
+    repo = PostgresHypotheticalTradeRepository(db_session)
+    trade = HypotheticalTrade(
+        user_id="user_1",
+        symbol="AAPL",
+        action=HypotheticalTradeAction.BUY,
+        quantity=10,
+        hypothetical_price=150.0,
+        rationale="r",
+        expected_outcome="e",
+        expected_horizon_days=30,
+        proposed_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    await repo.save_trade(trade)
+
+    first = HypotheticalPerformanceSample(
+        trade_id=trade.trade_id,
+        observed_at=datetime(2026, 1, 2, tzinfo=UTC),
+        price=155.0,
+        gain_loss_percent=3.33,
+    )
+    second = HypotheticalPerformanceSample(
+        trade_id=trade.trade_id,
+        observed_at=datetime(2026, 1, 2, tzinfo=UTC) + timedelta(days=1),
+        price=160.0,
+        gain_loss_percent=6.67,
+    )
+    await repo.save_performance_sample(first)
+    await repo.save_performance_sample(second)
+
+    samples = await repo.list_performance_samples(trade.trade_id)
+    assert [s.sample_id for s in samples] == [first.sample_id, second.sample_id]
