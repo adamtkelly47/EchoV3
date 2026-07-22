@@ -233,6 +233,9 @@ function ProjectsCard({ card }: { card: DashboardData["projects"] }) {
           ))}
         </ul>
       )}
+      <p>
+        <a href="/projects">View all projects →</a>
+      </p>
     </section>
   );
 }

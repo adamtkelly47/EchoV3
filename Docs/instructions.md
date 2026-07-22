@@ -264,7 +264,7 @@ curl "http://localhost:8000/trust/regression-cases"
 ```bash
 curl "http://localhost:8000/dashboard?user_id=me"
 ```
-One call, seven cards: Today (calendar), Money (portfolio), Attention (pending approvals + IPS breaches), Approval inbox, Projects, Conversation (recent sessions), Integration status. Every card carries its own `status`/`as_of` — a disconnected integration never takes down the other cards. The frontend at `http://localhost:3000/` renders this same endpoint. (Email is not yet one of the seven cards or its own frontend page — see the "What's deliberately not here" note in section 7.)
+One call, seven cards: Today (calendar), Money (portfolio), Attention (pending approvals + IPS breaches), Approval inbox, Projects, Conversation (recent sessions), Integration status. Every card carries its own `status`/`as_of` — a disconnected integration never takes down the other cards. The frontend at `http://localhost:3000/` renders this same endpoint. Email is not one of the seven cards (it isn't part of `DashboardQueryService`'s cross-domain read), but it does have its own frontend page — see section 3.13.
 
 ### 3.12 Gmail
 
@@ -296,6 +296,21 @@ curl -X POST http://localhost:8000/approvals/{proposal_id}/approve -H "Content-T
 # 7. Execute (only possible once approved)
 curl -X POST "http://localhost:8000/email/proposals/{proposal_id}/execute?user_id=me"
 ```
+
+### 3.13 Frontend pages
+
+`http://localhost:3000/` is the unified dashboard (section 3.11). A nav bar links to six more pages, each a thin, business-logic-free renderer of the same API endpoints described above — nothing on these pages does anything the `curl` examples above couldn't also do:
+
+| Page | Backed by |
+|---|---|
+| `/chat` | `/conversations` (section 3.1) |
+| `/email` | `/email` (section 3.12) — the only page where a write goes through a real approve/execute pair, shown as two separate buttons |
+| `/projects` | `/projects` (section 3.8) |
+| `/monitors` | `/monitors` (section 3.9) |
+| `/trust` | `/trust` (section 3.10) |
+| `/paper-trading` | `/portfolio/hypothetical-trades` (section 3.5) |
+
+None of these pages exist for Portfolio's Schwab connection, Calendar's read/write flow, or Research — those are exercised through the dashboard's own cards or directly via `curl`/API client today.
 Create/update draft, reply, archive, label, and trash follow the same propose -> approve -> execute pattern (`POST /email/drafts`, `PATCH /email/drafts/{draft_id}`, `POST /email/messages/{id}/reply`, `.../archive`, `.../labels`, `.../trash`). Every write is `email.write`-permissioned and goes through the same shared Approval Engine as Calendar (section 3.6) — there is no email-specific shortcut. **The Gmail OAuth consent flow itself has not been exercised against a real Google account from inside this codebase** (Docs/DECISION_LOG.md's Phase 20-21 entry) — step 1 above is the first real-world check; do that before trusting the write verifiers (`SENT`/`TRASH`/label checks) in practice.
 
 ## 4. What runs automatically (no action needed)
@@ -347,7 +362,7 @@ Security/dependency scans used throughout this project's own development (not re
 
 ## 7. What's deliberately not here
 
-- **A real, authenticated Gmail OAuth round-trip** — `domains/email/` (Phases 20-21) is fully built, tested (54 unit + 7 integration, all against fakes/real Neon), and live on the running API, but the actual Google consent flow has never been exercised against a real Gmail account from inside this codebase, and no Email card exists on the dashboard yet. Connect a real account via `GET /email/oauth/authorize` before relying on the write verifiers in practice.
+- **A real, authenticated Gmail OAuth round-trip** — `domains/email/` (Phases 20-21) is fully built, tested (54 unit + 7 integration, all against fakes/real Neon), and live on the running API and its own frontend page (`/email`), but the actual Google consent flow has never been exercised against a real Gmail account from inside this codebase. Connect a real account via `GET /email/oauth/authorize` (or the "Connect Gmail" link on `/email`) before relying on the write verifiers in practice.
 - **Real trade execution** (`Docs/PROMPT.md` Phase 28, "Future narrow trade execution") — explicitly not authorized by PROMPT.md itself. No order endpoint exists anywhere, for real or hypothetical trades.
 - **Speech-to-text / text-to-speech** — Phase 26 built the *contract* (channel abstraction, streaming events, interruption handling) a voice frontend would need, but no actual audio transport or STT/TTS vendor is integrated.
 - **Automatic hallucination detection** — every hallucination incident starts from a human noticing and reporting one; there is no code anywhere that judges its own output as false or unsupported.

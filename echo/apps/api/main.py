@@ -52,7 +52,12 @@ app.include_router(trust_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
-    allow_methods=["GET", "POST"],
+    # PATCH added alongside GET/POST: several routes (calendar/email event
+    # modification, project status, monitor enable/disable) always used
+    # PATCH, but no frontend page called one from the browser until the
+    # Phase 23-27 pages did — a real, previously-latent gap, not a new
+    # capability.
+    allow_methods=["GET", "POST", "PATCH"],
     allow_headers=["*"],
 )
 
