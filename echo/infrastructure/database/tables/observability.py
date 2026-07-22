@@ -30,6 +30,9 @@ class ModelCallRow(Base):
     cost_estimate_usd: Mapped[float | None] = mapped_column(Float)
     escalated: Mapped[bool] = mapped_column(Boolean, default=False)
     escalation_reason: Mapped[str | None] = mapped_column(String)
+    # Only meaningful for generate_structured() calls (schema validation
+    # doesn't apply to free-text generate()) — null there, not False.
+    schema_valid: Mapped[bool | None] = mapped_column(Boolean)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

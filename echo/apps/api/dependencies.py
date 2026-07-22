@@ -24,8 +24,10 @@ from application.orchestrators.memory_extraction import MemoryExtractionOrchestr
 from application.orchestrators.monitoring import MonitoringOrchestrator
 from application.orchestrators.news_intelligence import NewsIntelligenceOrchestrator
 from application.orchestrators.project_memory import ProjectMemoryOrchestrator
+from application.orchestrators.trust import TrustOrchestrator
 from application.portfolio_provider_factory import build_schwab_provider
 from application.queries.dashboard_query import DashboardQueryService
+from application.queries.trust_dashboard_query import TrustDashboardQueryService
 from application.research_provider_factory import (
     build_form4_providers,
     build_legislator_reference_provider,
@@ -72,7 +74,10 @@ from domains.system.repository import PostgresSystemRepository
 from domains.system.service import SystemService
 from infrastructure.database.engine import session_scope
 from infrastructure.database.repositories.audit import PostgresAuditRepository
-from infrastructure.database.repositories.observability import PostgresToolCallRepository
+from infrastructure.database.repositories.observability import (
+    PostgresModelCallRepository,
+    PostgresToolCallRepository,
+)
 from infrastructure.database.repositories.provenance import (
     PostgresComputedValueRecordRepository,
     PostgresSourceRecordRepository,
@@ -311,4 +316,26 @@ def get_monitoring_orchestrator(
 ) -> MonitoringOrchestrator:
     return MonitoringOrchestrator(
         system, portfolio, calendar, research, PostgresAuditRepository(session), SystemClock()
+    )
+
+
+def get_trust_orchestrator(
+    memory: MemoryService = Depends(get_memory_service),
+    system: SystemService = Depends(get_system_service),
+) -> TrustOrchestrator:
+    return TrustOrchestrator(memory, system)
+
+
+def get_trust_dashboard_query_service(
+    portfolio: PortfolioService = Depends(get_portfolio_service),
+    system: SystemService = Depends(get_system_service),
+    session: AsyncSession = Depends(get_db_session),
+) -> TrustDashboardQueryService:
+    return TrustDashboardQueryService(
+        portfolio,
+        system,
+        PostgresAuditRepository(session),
+        PostgresModelCallRepository(session),
+        PostgresToolCallRepository(session),
+        SystemClock(),
     )

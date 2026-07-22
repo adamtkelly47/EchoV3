@@ -18,6 +18,7 @@ from pydantic import BaseModel
 
 from core.config import Settings
 from core.time import SystemClock
+from infrastructure.database.repositories.observability import StandaloneModelCallRecorder
 from providers.models.claude.adapter import ClaudeAdapter
 from providers.models.contracts import ModelRequest, ModelResponse, Provider
 from providers.models.gateway import ModelGateway
@@ -53,5 +54,8 @@ def build_model_gateway(settings: Settings) -> ModelGatewayPort:
     )
     ollama = OllamaAdapter(settings.ollama_base_url, settings.ollama_model_name, clock)
     return ModelGateway(
-        claude=claude, ollama=ollama, default_provider=Provider(settings.default_model_provider)
+        claude=claude,
+        ollama=ollama,
+        default_provider=Provider(settings.default_model_provider),
+        recorder=StandaloneModelCallRecorder(),
     )

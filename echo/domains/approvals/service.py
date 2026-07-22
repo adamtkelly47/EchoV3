@@ -191,6 +191,18 @@ class ApprovalService:
             return proposal  # idempotent: already executed, never re-run the adapter
 
         if proposal.status != ProposalStatus.APPROVED:
+            # PROMPT.md Phase 25 tracked item 8: "approval bypass attempts
+            # blocked." Every other rejection branch in this method already
+            # records an audit event (execution_failed/verification_failed/
+            # executed) — this one didn't, meaning the single most
+            # important rejection (an attempt to run something never
+            # approved) previously left no trace at all.
+            await self._audit.record(
+                action="approval.execution_blocked_not_approved",
+                result="blocked",
+                capability_id=proposal.action_type,
+                detail={"proposal_id": proposal_id, "status": proposal.status.value},
+            )
             raise ApprovalRequiredError(f"{proposal_id} is not approved (status={proposal.status})")
 
         decision = await self._decisions.get_latest_for_proposal(proposal_id)

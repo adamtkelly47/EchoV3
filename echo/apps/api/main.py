@@ -21,6 +21,7 @@ from apps.api.routes.portfolio import router as portfolio_router
 from apps.api.routes.projects import router as projects_router
 from apps.api.routes.research import router as research_router
 from apps.api.routes.system import router as system_router
+from apps.api.routes.trust import router as trust_router
 from core.config import get_settings
 from core.errors import EchoError
 from core.logging import configure_logging, get_logger
@@ -40,6 +41,7 @@ app.include_router(research_router)
 app.include_router(dashboard_router)
 app.include_router(projects_router)
 app.include_router(system_router)
+app.include_router(trust_router)
 
 # Frontend runs on a different origin (localhost:3000 vs. this API's
 # localhost:8000) — the browser needs explicit CORS permission. Origin is

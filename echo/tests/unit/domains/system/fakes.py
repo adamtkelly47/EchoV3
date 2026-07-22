@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from domains.system.models import AlertStatus
-from domains.system.schemas import Alert, EvaluationRun, MonitorDefinition
+from domains.system.schemas import (
+    Alert,
+    EvaluationRun,
+    HallucinationIncident,
+    MonitorDefinition,
+    RegressionCase,
+)
 
 
 class FakeSystemRepository:
@@ -11,6 +18,8 @@ class FakeSystemRepository:
         self.monitors: dict[str, MonitorDefinition] = {}
         self.alerts: dict[str, Alert] = {}
         self.evaluation_runs: list[EvaluationRun] = []
+        self.hallucination_incidents: dict[str, HallucinationIncident] = {}
+        self.regression_cases: list[RegressionCase] = []
 
     async def save_monitor(self, monitor: MonitorDefinition) -> MonitorDefinition:
         self.monitors[monitor.monitor_id] = monitor
@@ -47,6 +56,32 @@ class FakeSystemRepository:
 
     async def list_evaluation_runs_for_monitor(self, monitor_id: str) -> list[EvaluationRun]:
         return [r for r in self.evaluation_runs if r.monitor_id == monitor_id]
+
+    async def save_hallucination_incident(
+        self, incident: HallucinationIncident
+    ) -> HallucinationIncident:
+        self.hallucination_incidents[incident.incident_id] = incident
+        return incident
+
+    async def get_hallucination_incident(self, incident_id: str) -> HallucinationIncident | None:
+        return self.hallucination_incidents.get(incident_id)
+
+    async def list_hallucination_incidents_for_user(
+        self, user_id: str
+    ) -> list[HallucinationIncident]:
+        return [i for i in self.hallucination_incidents.values() if i.user_id == user_id]
+
+    async def list_hallucination_incidents_since(
+        self, since: datetime
+    ) -> list[HallucinationIncident]:
+        return [i for i in self.hallucination_incidents.values() if i.reported_at >= since]
+
+    async def save_regression_case(self, case: RegressionCase) -> RegressionCase:
+        self.regression_cases.append(case)
+        return case
+
+    async def list_regression_cases(self) -> list[RegressionCase]:
+        return list(self.regression_cases)
 
 
 class FakeAuditRepository:

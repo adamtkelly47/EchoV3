@@ -24,3 +24,17 @@ class InvalidAlertTransitionError(EchoError):
     retryable = False
     severity = Severity.LOW
     http_status = 409
+
+
+class HallucinationIncidentNotFoundError(EchoError):
+    code = "hallucination_incident_not_found"
+    retryable = False
+    severity = Severity.LOW
+    http_status = 404
+
+
+class HallucinationIncidentAlreadyResolvedError(EchoError):
+    code = "hallucination_incident_already_resolved"
+    retryable = False
+    severity = Severity.LOW
+    http_status = 409

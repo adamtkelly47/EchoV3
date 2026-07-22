@@ -9,15 +9,30 @@ CONSTITUTION.md reserves cross-domain coordination for it).
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from core.time import Clock
 from domains.system.errors import (
     AlertNotFoundError,
+    HallucinationIncidentAlreadyResolvedError,
+    HallucinationIncidentNotFoundError,
     InvalidAlertTransitionError,
     MonitorNotFoundError,
 )
-from domains.system.models import AlertSeverity, AlertStatus, MonitorType
+from domains.system.models import (
+    AlertSeverity,
+    AlertStatus,
+    HallucinationIncidentStatus,
+    MonitorType,
+)
 from domains.system.repository import SystemRepository
-from domains.system.schemas import Alert, EvaluationRun, MonitorDefinition
+from domains.system.schemas import (
+    Alert,
+    EvaluationRun,
+    HallucinationIncident,
+    MonitorDefinition,
+    RegressionCase,
+)
 from infrastructure.database.repositories.audit import AuditRepository
 
 
@@ -173,3 +188,101 @@ class SystemService:
         if monitor is None:
             raise MonitorNotFoundError(f"no monitor found with id {monitor_id!r}")
         return monitor
+
+    async def report_hallucination(
+        self, user_id: str, *, description: str, correlation_id: str | None = None
+    ) -> HallucinationIncident:
+        """PROMPT.md Phase 25 tracked item 7. No automatic detector decides
+        this — a human noticing and reporting it is the only trigger, by
+        design (CONSTITUTION.md: only a human can judge whether a claim
+        was actually false or unsupported)."""
+        incident = HallucinationIncident(
+            user_id=user_id,
+            correlation_id=correlation_id,
+            description=description,
+            reported_at=self._clock.now_utc(),
+        )
+        await self._repository.save_hallucination_incident(incident)
+        await self._audit.record(
+            action="system.hallucination_reported",
+            result="success",
+            correlation_id=correlation_id,
+            detail={"incident_id": incident.incident_id},
+        )
+        return incident
+
+    async def resolve_hallucination(
+        self, incident_id: str, *, resolution_note: str
+    ) -> HallucinationIncident:
+        """Resolving also seeds a `RegressionCase` (PROMPT.md Phase 25:
+        "Create regression datasets from corrected failures") — the
+        incident's own description is the incorrect output being
+        corrected, and `resolution_note` is what should have been said
+        instead."""
+        incident = await self._require_hallucination_incident(incident_id)
+        if incident.status == HallucinationIncidentStatus.RESOLVED:
+            raise HallucinationIncidentAlreadyResolvedError(
+                f"hallucination incident {incident_id!r} is already resolved"
+            )
+        resolved = incident.model_copy(
+            update={
+                "status": HallucinationIncidentStatus.RESOLVED,
+                "resolution_note": resolution_note,
+                "resolved_at": self._clock.now_utc(),
+            }
+        )
+        await self._repository.save_hallucination_incident(resolved)
+        await self._repository.save_regression_case(
+            RegressionCase(
+                source_type="hallucination_incident",
+                source_id=resolved.incident_id,
+                incorrect_output=resolved.description,
+                corrected_output=resolution_note,
+                created_at=self._clock.now_utc(),
+            )
+        )
+        await self._audit.record(
+            action="system.hallucination_resolved",
+            result="success",
+            correlation_id=incident.correlation_id,
+            detail={"incident_id": incident_id},
+        )
+        return resolved
+
+    async def list_hallucination_incidents_for_user(
+        self, user_id: str
+    ) -> list[HallucinationIncident]:
+        return await self._repository.list_hallucination_incidents_for_user(user_id)
+
+    async def list_hallucination_incidents_since(
+        self, since: datetime
+    ) -> list[HallucinationIncident]:
+        return await self._repository.list_hallucination_incidents_since(since)
+
+    async def record_regression_case(
+        self, *, source_type: str, source_id: str, incorrect_output: str, corrected_output: str
+    ) -> RegressionCase:
+        """The second, non-hallucination path into the regression dataset
+        (PROMPT.md Phase 25) — a user-initiated memory correction
+        (`application/orchestrators/trust.py`'s `TrustOrchestrator.
+        record_user_correction`) is exactly as real a "corrected failure"
+        as a resolved hallucination incident."""
+        case = RegressionCase(
+            source_type=source_type,
+            source_id=source_id,
+            incorrect_output=incorrect_output,
+            corrected_output=corrected_output,
+            created_at=self._clock.now_utc(),
+        )
+        return await self._repository.save_regression_case(case)
+
+    async def list_regression_cases(self) -> list[RegressionCase]:
+        return await self._repository.list_regression_cases()
+
+    async def _require_hallucination_incident(self, incident_id: str) -> HallucinationIncident:
+        incident = await self._repository.get_hallucination_incident(incident_id)
+        if incident is None:
+            raise HallucinationIncidentNotFoundError(
+                f"no hallucination incident found with id {incident_id!r}"
+            )
+        return incident

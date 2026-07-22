@@ -15,8 +15,19 @@ from sqlalchemy import Boolean, DateTime, Integer, String, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
-from domains.system.models import AlertSeverity, AlertStatus, MonitorType
-from domains.system.schemas import Alert, EvaluationRun, MonitorDefinition
+from domains.system.models import (
+    AlertSeverity,
+    AlertStatus,
+    HallucinationIncidentStatus,
+    MonitorType,
+)
+from domains.system.schemas import (
+    Alert,
+    EvaluationRun,
+    HallucinationIncident,
+    MonitorDefinition,
+    RegressionCase,
+)
 from infrastructure.database.base import Base
 
 
@@ -62,6 +73,30 @@ class EvaluationRunRow(Base):
     detail: Mapped[str | None] = mapped_column(String)
 
 
+class HallucinationIncidentRow(Base):
+    __tablename__ = "system_hallucination_incidents"
+
+    incident_id: Mapped[str] = mapped_column(String, primary_key=True)
+    user_id: Mapped[str] = mapped_column(String, index=True)
+    correlation_id: Mapped[str | None] = mapped_column(String, index=True)
+    description: Mapped[str] = mapped_column(String)
+    status: Mapped[str] = mapped_column(String, index=True)
+    reported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    resolution_note: Mapped[str | None] = mapped_column(String)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RegressionCaseRow(Base):
+    __tablename__ = "system_regression_cases"
+
+    case_id: Mapped[str] = mapped_column(String, primary_key=True)
+    source_type: Mapped[str] = mapped_column(String, index=True)
+    source_id: Mapped[str] = mapped_column(String, index=True)
+    incorrect_output: Mapped[str] = mapped_column(String)
+    corrected_output: Mapped[str] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 def _row_to_monitor(row: MonitorDefinitionRow) -> MonitorDefinition:
     return MonitorDefinition(
         monitor_id=row.monitor_id,
@@ -104,6 +139,30 @@ def _row_to_evaluation_run(row: EvaluationRunRow) -> EvaluationRun:
     )
 
 
+def _row_to_hallucination_incident(row: HallucinationIncidentRow) -> HallucinationIncident:
+    return HallucinationIncident(
+        incident_id=row.incident_id,
+        user_id=row.user_id,
+        correlation_id=row.correlation_id,
+        description=row.description,
+        status=HallucinationIncidentStatus(row.status),
+        reported_at=row.reported_at,
+        resolution_note=row.resolution_note,
+        resolved_at=row.resolved_at,
+    )
+
+
+def _row_to_regression_case(row: RegressionCaseRow) -> RegressionCase:
+    return RegressionCase(
+        case_id=row.case_id,
+        source_type=row.source_type,
+        source_id=row.source_id,
+        incorrect_output=row.incorrect_output,
+        corrected_output=row.corrected_output,
+        created_at=row.created_at,
+    )
+
+
 class SystemRepository(Protocol):
     async def save_monitor(self, monitor: MonitorDefinition) -> MonitorDefinition: ...
     async def get_monitor(self, monitor_id: str) -> MonitorDefinition | None: ...
@@ -117,6 +176,22 @@ class SystemRepository(Protocol):
 
     async def save_evaluation_run(self, run: EvaluationRun) -> EvaluationRun: ...
     async def list_evaluation_runs_for_monitor(self, monitor_id: str) -> list[EvaluationRun]: ...
+
+    async def save_hallucination_incident(
+        self, incident: HallucinationIncident
+    ) -> HallucinationIncident: ...
+    async def get_hallucination_incident(
+        self, incident_id: str
+    ) -> HallucinationIncident | None: ...
+    async def list_hallucination_incidents_for_user(
+        self, user_id: str
+    ) -> list[HallucinationIncident]: ...
+    async def list_hallucination_incidents_since(
+        self, since: datetime
+    ) -> list[HallucinationIncident]: ...
+
+    async def save_regression_case(self, case: RegressionCase) -> RegressionCase: ...
+    async def list_regression_cases(self) -> list[RegressionCase]: ...
 
 
 class PostgresSystemRepository:
@@ -222,3 +297,63 @@ class PostgresSystemRepository:
             select(EvaluationRunRow).where(EvaluationRunRow.monitor_id == monitor_id)
         )
         return [_row_to_evaluation_run(row) for row in result.scalars().all()]
+
+    async def save_hallucination_incident(
+        self, incident: HallucinationIncident
+    ) -> HallucinationIncident:
+        row = await self._session.get(HallucinationIncidentRow, incident.incident_id)
+        if row is None:
+            row = HallucinationIncidentRow(
+                incident_id=incident.incident_id,
+                user_id=incident.user_id,
+                correlation_id=incident.correlation_id,
+                description=incident.description,
+                reported_at=incident.reported_at,
+            )
+            self._session.add(row)
+        row.status = incident.status.value
+        row.resolution_note = incident.resolution_note
+        row.resolved_at = incident.resolved_at
+        await self._session.flush()
+        return incident
+
+    async def get_hallucination_incident(self, incident_id: str) -> HallucinationIncident | None:
+        row = await self._session.get(HallucinationIncidentRow, incident_id)
+        return _row_to_hallucination_incident(row) if row is not None else None
+
+    async def list_hallucination_incidents_for_user(
+        self, user_id: str
+    ) -> list[HallucinationIncident]:
+        result = await self._session.execute(
+            select(HallucinationIncidentRow).where(HallucinationIncidentRow.user_id == user_id)
+        )
+        return [_row_to_hallucination_incident(row) for row in result.scalars().all()]
+
+    async def list_hallucination_incidents_since(
+        self, since: datetime
+    ) -> list[HallucinationIncident]:
+        result = await self._session.execute(
+            select(HallucinationIncidentRow).where(HallucinationIncidentRow.reported_at >= since)
+        )
+        return [_row_to_hallucination_incident(row) for row in result.scalars().all()]
+
+    async def save_regression_case(self, case: RegressionCase) -> RegressionCase:
+        # Immutable/append-only, matching EvaluationRun's own precedent —
+        # a regression case is a historical fact about a past failure,
+        # never edited after creation.
+        self._session.add(
+            RegressionCaseRow(
+                case_id=case.case_id,
+                source_type=case.source_type,
+                source_id=case.source_id,
+                incorrect_output=case.incorrect_output,
+                corrected_output=case.corrected_output,
+                created_at=case.created_at,
+            )
+        )
+        await self._session.flush()
+        return case
+
+    async def list_regression_cases(self) -> list[RegressionCase]:
+        result = await self._session.execute(select(RegressionCaseRow))
+        return [_row_to_regression_case(row) for row in result.scalars().all()]

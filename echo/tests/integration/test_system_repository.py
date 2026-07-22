@@ -1,10 +1,21 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from domains.system.models import AlertSeverity, AlertStatus, MonitorType
+from domains.system.models import (
+    AlertSeverity,
+    AlertStatus,
+    HallucinationIncidentStatus,
+    MonitorType,
+)
 from domains.system.repository import PostgresSystemRepository
-from domains.system.schemas import Alert, EvaluationRun, MonitorDefinition
+from domains.system.schemas import (
+    Alert,
+    EvaluationRun,
+    HallucinationIncident,
+    MonitorDefinition,
+    RegressionCase,
+)
 
 
 async def test_monitor_save_and_get_round_trips(db_session: AsyncSession) -> None:
@@ -168,3 +179,102 @@ async def test_evaluation_run_save_is_append_only_and_lists(db_session: AsyncSes
 
     listed = await repo.list_evaluation_runs_for_monitor("system_repo_test_monitor_1")
     assert {r.evaluation_id for r in listed} == {first.evaluation_id, second.evaluation_id}
+
+
+async def test_hallucination_incident_save_and_get_round_trips(db_session: AsyncSession) -> None:
+    repo = PostgresSystemRepository(db_session)
+    incident = HallucinationIncident(
+        user_id="system_repo_test_user_g",
+        description="claimed the meeting was at 3pm",
+        reported_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    await repo.save_hallucination_incident(incident)
+
+    fetched = await repo.get_hallucination_incident(incident.incident_id)
+    assert fetched is not None
+    assert fetched.status == HallucinationIncidentStatus.OPEN
+    assert fetched.description == "claimed the meeting was at 3pm"
+
+
+async def test_hallucination_incident_save_upserts_resolution(db_session: AsyncSession) -> None:
+    repo = PostgresSystemRepository(db_session)
+    incident = HallucinationIncident(
+        user_id="system_repo_test_user_h",
+        description="claimed a wrong balance",
+        reported_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    await repo.save_hallucination_incident(incident)
+
+    resolved = incident.model_copy(
+        update={
+            "status": HallucinationIncidentStatus.RESOLVED,
+            "resolution_note": "balance was actually correct",
+            "resolved_at": datetime(2026, 1, 2, tzinfo=UTC),
+        }
+    )
+    await repo.save_hallucination_incident(resolved)
+
+    fetched = await repo.get_hallucination_incident(incident.incident_id)
+    assert fetched is not None
+    assert fetched.status == HallucinationIncidentStatus.RESOLVED
+    assert fetched.resolution_note == "balance was actually correct"
+
+
+async def test_list_hallucination_incidents_for_user_scopes_correctly(
+    db_session: AsyncSession,
+) -> None:
+    repo = PostgresSystemRepository(db_session)
+    mine = HallucinationIncident(
+        user_id="system_repo_test_user_i",
+        description="a",
+        reported_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    other = HallucinationIncident(
+        user_id="system_repo_test_user_j",
+        description="b",
+        reported_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    await repo.save_hallucination_incident(mine)
+    await repo.save_hallucination_incident(other)
+
+    matches = await repo.list_hallucination_incidents_for_user("system_repo_test_user_i")
+    assert [i.incident_id for i in matches] == [mine.incident_id]
+
+
+async def test_list_hallucination_incidents_since_excludes_older_reports(
+    db_session: AsyncSession,
+) -> None:
+    repo = PostgresSystemRepository(db_session)
+    incident = HallucinationIncident(
+        user_id="system_repo_test_user_k",
+        description="recent report",
+        reported_at=datetime.now(UTC),
+    )
+    await repo.save_hallucination_incident(incident)
+
+    since = datetime.now(UTC) - timedelta(minutes=1)
+    recent = await repo.list_hallucination_incidents_since(since)
+    assert incident.incident_id in {i.incident_id for i in recent}
+
+    future_since = datetime.now(UTC) + timedelta(minutes=1)
+    assert incident.incident_id not in {
+        i.incident_id for i in await repo.list_hallucination_incidents_since(future_since)
+    }
+
+
+async def test_regression_case_save_is_append_only_and_lists(db_session: AsyncSession) -> None:
+    """PROMPT.md Phase 25: "Create regression datasets from corrected
+    failures\" — proven against real Postgres, not just the in-memory
+    fake."""
+    repo = PostgresSystemRepository(db_session)
+    case = RegressionCase(
+        source_type="hallucination_incident",
+        source_id="incident_1",
+        incorrect_output="wrong claim",
+        corrected_output="right answer",
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    await repo.save_regression_case(case)
+
+    listed = await repo.list_regression_cases()
+    assert case.case_id in {c.case_id for c in listed}

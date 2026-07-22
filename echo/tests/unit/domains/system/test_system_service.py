@@ -1,14 +1,16 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from core.time import FakeClock
 from domains.system.errors import (
     AlertNotFoundError,
+    HallucinationIncidentAlreadyResolvedError,
+    HallucinationIncidentNotFoundError,
     InvalidAlertTransitionError,
     MonitorNotFoundError,
 )
-from domains.system.models import AlertStatus, MonitorType
+from domains.system.models import AlertStatus, HallucinationIncidentStatus, MonitorType
 from domains.system.service import SystemService
 from tests.unit.domains.system.fakes import FakeAuditRepository, FakeSystemRepository
 
@@ -188,3 +190,79 @@ async def test_record_evaluation_run_is_append_only() -> None:
     runs = await service.list_evaluation_runs_for_monitor(monitor.monitor_id)
     assert len(runs) == 2
     assert [r.triggered for r in runs] == [False, True]
+
+
+async def test_report_hallucination_creates_an_open_incident() -> None:
+    service, _ = _service()
+    incident = await service.report_hallucination("user_1", description="claimed X falsely")
+    assert incident.status == HallucinationIncidentStatus.OPEN
+    assert incident.resolved_at is None
+
+
+async def test_resolve_hallucination_seeds_a_regression_case() -> None:
+    """PROMPT.md Phase 25: "Create regression datasets from corrected
+    failures.\" """
+    service, _ = _service()
+    incident = await service.report_hallucination("user_1", description="claimed X falsely")
+    resolved = await service.resolve_hallucination(
+        incident.incident_id, resolution_note="the correct answer is Y"
+    )
+    assert resolved.status == HallucinationIncidentStatus.RESOLVED
+    assert resolved.resolution_note == "the correct answer is Y"
+    assert resolved.resolved_at is not None
+
+    cases = await service.list_regression_cases()
+    assert len(cases) == 1
+    assert cases[0].source_type == "hallucination_incident"
+    assert cases[0].source_id == incident.incident_id
+    assert cases[0].incorrect_output == "claimed X falsely"
+    assert cases[0].corrected_output == "the correct answer is Y"
+
+
+async def test_resolve_hallucination_raises_when_missing() -> None:
+    service, _ = _service()
+    with pytest.raises(HallucinationIncidentNotFoundError):
+        await service.resolve_hallucination("does-not-exist", resolution_note="n/a")
+
+
+async def test_cannot_resolve_an_already_resolved_incident() -> None:
+    service, _ = _service()
+    incident = await service.report_hallucination("user_1", description="claimed X falsely")
+    await service.resolve_hallucination(incident.incident_id, resolution_note="Y")
+
+    with pytest.raises(HallucinationIncidentAlreadyResolvedError):
+        await service.resolve_hallucination(incident.incident_id, resolution_note="Y again")
+
+
+async def test_list_hallucination_incidents_for_user_scopes_correctly() -> None:
+    service, _ = _service()
+    await service.report_hallucination("user_1", description="a")
+    await service.report_hallucination("user_2", description="b")
+    incidents = await service.list_hallucination_incidents_for_user("user_1")
+    assert len(incidents) == 1
+    assert incidents[0].description == "a"
+
+
+async def test_list_hallucination_incidents_since_excludes_older_reports() -> None:
+    clock = FakeClock(datetime(2026, 1, 10, tzinfo=UTC))
+    service, _ = _service(clock)
+    await service.report_hallucination("user_1", description="recent")
+    since = clock.now_utc() - timedelta(days=1)
+    incidents = await service.list_hallucination_incidents_since(since)
+    assert len(incidents) == 1
+
+
+async def test_record_regression_case_directly_for_user_corrections() -> None:
+    """The second path into the regression dataset — a user-initiated
+    memory correction (application/orchestrators/trust.py), not a
+    resolved hallucination incident."""
+    service, _ = _service()
+    case = await service.record_regression_case(
+        source_type="user_correction",
+        source_id="memory_1",
+        incorrect_output="old fact",
+        corrected_output="new fact",
+    )
+    assert case.source_type == "user_correction"
+    cases = await service.list_regression_cases()
+    assert cases == [case]

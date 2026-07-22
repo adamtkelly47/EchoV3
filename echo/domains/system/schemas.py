@@ -14,7 +14,12 @@ from datetime import datetime
 from pydantic import BaseModel, Field
 
 from core.identifiers import new_id
-from domains.system.models import AlertSeverity, AlertStatus, MonitorType
+from domains.system.models import (
+    AlertSeverity,
+    AlertStatus,
+    HallucinationIncidentStatus,
+    MonitorType,
+)
 
 
 class MonitorDefinition(BaseModel):
@@ -68,3 +73,36 @@ class EvaluationRun(BaseModel):
     evaluated_at: datetime
     triggered: bool
     detail: str | None = None
+
+
+class HallucinationIncident(BaseModel):
+    """PROMPT.md Phase 25 tracked item 7. A human-reported claim: no
+    automatic hallucination detector exists (or is claimed) anywhere in
+    this codebase — every incident starts from a person noticing Echo
+    said something unsupported or false, matching CONSTITUTION.md's own
+    stance that only a human, not the model itself, can judge this."""
+
+    incident_id: str = Field(default_factory=lambda: new_id("hallucination"))
+    user_id: str
+    correlation_id: str | None = None
+    description: str
+    status: HallucinationIncidentStatus = HallucinationIncidentStatus.OPEN
+    reported_at: datetime
+    resolution_note: str | None = None
+    resolved_at: datetime | None = None
+
+
+class RegressionCase(BaseModel):
+    """PROMPT.md Phase 25: "Create regression datasets from corrected
+    failures." Built automatically from a resolved `HallucinationIncident`
+    or a user-initiated memory correction (`application/orchestrators/
+    trust.py`) — capturing what Echo actually got wrong and what the
+    correct answer was, so a future evaluation pass has real, non-synthetic
+    cases to check against rather than starting from nothing."""
+
+    case_id: str = Field(default_factory=lambda: new_id("regression"))
+    source_type: str
+    source_id: str
+    incorrect_output: str
+    corrected_output: str
+    created_at: datetime

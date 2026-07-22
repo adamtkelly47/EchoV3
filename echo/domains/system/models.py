@@ -39,3 +39,13 @@ class AlertStatus(str, Enum):
     ACTIVE = "active"
     ACKNOWLEDGED = "acknowledged"
     SUPPRESSED = "suppressed"
+
+
+class HallucinationIncidentStatus(str, Enum):
+    """PROMPT.md Phase 25 tracked item 7: "hallucination incidents." Two
+    states only, like `domains/projects/models.py`'s `BlockerStatus` — a
+    report exists, and is later resolved (with a note on what the correct
+    answer actually was); there is no re-opening concept."""
+
+    OPEN = "open"
+    RESOLVED = "resolved"

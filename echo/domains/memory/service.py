@@ -116,7 +116,17 @@ class MemoryService:
             action="memory.superseded",
             result="success",
             correlation_id=correlation_id,
-            detail={"old_memory_id": old.memory_id, "new_memory_id": new_record.memory_id},
+            detail={
+                "old_memory_id": old.memory_id,
+                "new_memory_id": new_record.memory_id,
+                # PROMPT.md Phase 25's "user corrections" metric reads this
+                # back via AuditRepository.list_recent_by_action, filtering
+                # for source_type=="user_correction" — the convention
+                # application/orchestrators/trust.py's TrustOrchestrator
+                # uses when a human (not another orchestrator) corrects a
+                # memory fact.
+                "source_type": source_type,
+            },
         )
         return new_record
 
