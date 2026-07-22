@@ -21,6 +21,7 @@ from application.orchestrators.calendar_writes import CalendarWriteOrchestrator
 from application.orchestrators.conversation import ConversationOrchestrator
 from application.orchestrators.insider_intelligence import InsiderIntelligenceOrchestrator
 from application.orchestrators.memory_extraction import MemoryExtractionOrchestrator
+from application.orchestrators.monitoring import MonitoringOrchestrator
 from application.orchestrators.news_intelligence import NewsIntelligenceOrchestrator
 from application.orchestrators.project_memory import ProjectMemoryOrchestrator
 from application.portfolio_provider_factory import build_schwab_provider
@@ -67,6 +68,8 @@ from domains.research.service import (
     ResearchProviderPort,
     ResearchService,
 )
+from domains.system.repository import PostgresSystemRepository
+from domains.system.service import SystemService
 from infrastructure.database.engine import session_scope
 from infrastructure.database.repositories.audit import PostgresAuditRepository
 from infrastructure.database.repositories.observability import PostgresToolCallRepository
@@ -288,4 +291,24 @@ def get_dashboard_query_service(
 ) -> DashboardQueryService:
     return DashboardQueryService(
         portfolio, calendar, approvals, conversations, projects, SystemClock(), get_settings()
+    )
+
+
+def get_system_service(
+    session: AsyncSession = Depends(get_db_session),
+) -> SystemService:
+    return SystemService(
+        PostgresSystemRepository(session), PostgresAuditRepository(session), SystemClock()
+    )
+
+
+def get_monitoring_orchestrator(
+    system: SystemService = Depends(get_system_service),
+    portfolio: PortfolioService = Depends(get_portfolio_service),
+    calendar: CalendarService = Depends(get_calendar_service),
+    research: ResearchService = Depends(get_research_service),
+    session: AsyncSession = Depends(get_db_session),
+) -> MonitoringOrchestrator:
+    return MonitoringOrchestrator(
+        system, portfolio, calendar, research, PostgresAuditRepository(session), SystemClock()
     )

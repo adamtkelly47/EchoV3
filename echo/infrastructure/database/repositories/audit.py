@@ -5,6 +5,7 @@ must remain immutable — this repository has no update method, only
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Protocol
 
 from sqlalchemy import select
@@ -31,6 +32,10 @@ class AuditRepository(Protocol):
     async def get(self, audit_id: str) -> AuditEventRow | None: ...
 
     async def list_for_correlation(self, correlation_id: str) -> list[AuditEventRow]: ...
+
+    async def list_recent_by_action(
+        self, action: str, since: datetime, *, result: str | None = None
+    ) -> list[AuditEventRow]: ...
 
 
 class PostgresAuditRepository:
@@ -72,3 +77,17 @@ class PostgresAuditRepository:
             select(AuditEventRow).where(AuditEventRow.correlation_id == correlation_id)
         )
         return list(result.scalars().all())
+
+    async def list_recent_by_action(
+        self, action: str, since: datetime, *, result: str | None = None
+    ) -> list[AuditEventRow]:
+        """PROMPT.md Phase 24's "integration failure" monitor is built
+        directly on this — `calendar.token_refresh_failed`/
+        `schwab.token_refresh_failed` are real audit actions every OAuth
+        integration has recorded on failure since Phases 10-12, well
+        before any monitoring concept existed."""
+        conditions = [AuditEventRow.action == action, AuditEventRow.created_at >= since]
+        if result is not None:
+            conditions.append(AuditEventRow.result == result)
+        query_result = await self._session.execute(select(AuditEventRow).where(*conditions))
+        return list(query_result.scalars().all())

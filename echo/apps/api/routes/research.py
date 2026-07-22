@@ -370,7 +370,9 @@ def _to_politician_transaction_response(t: PoliticianTransaction) -> PoliticianT
     )
 
 
-def _to_politician_evidence_response(evidence: PoliticianEvidenceView) -> PoliticianEvidenceResponse:
+def _to_politician_evidence_response(
+    evidence: PoliticianEvidenceView,
+) -> PoliticianEvidenceResponse:
     return PoliticianEvidenceResponse(
         politician_bioguide_id=evidence.politician_bioguide_id,
         transactions=[_to_politician_transaction_response(t) for t in evidence.transactions],

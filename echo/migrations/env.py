@@ -58,6 +58,11 @@ from domains.research.repository import (  # noqa: F401 — registers tables on 
     ResearchRawResponseRow,
     SecurityMasterEntryRow,
 )
+from domains.system.repository import (  # noqa: F401 — registers tables on Base.metadata
+    AlertRow,
+    EvaluationRunRow,
+    MonitorDefinitionRow,
+)
 from infrastructure.database.base import Base
 from infrastructure.database.engine import create_engine, to_asyncpg_url
 from infrastructure.database.tables import (  # noqa: F401 — registers tables on Base.metadata

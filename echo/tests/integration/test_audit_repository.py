@@ -1,3 +1,5 @@
+from datetime import UTC, datetime, timedelta
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from infrastructure.database.repositories.audit import PostgresAuditRepository
@@ -33,3 +35,30 @@ async def test_list_for_correlation(db_session: AsyncSession) -> None:
 async def test_get_missing_returns_none(db_session: AsyncSession) -> None:
     repo = PostgresAuditRepository(db_session)
     assert await repo.get("audit_does_not_exist") is None
+
+
+async def test_list_recent_by_action_filters_by_action_and_result(
+    db_session: AsyncSession,
+) -> None:
+    """PROMPT.md Phase 24's "integration failure" monitor is built
+    directly on this query."""
+    repo = PostgresAuditRepository(db_session)
+    await repo.record(action="audit_repo_test.token_refresh_failed", result="failure")
+    await repo.record(action="audit_repo_test.token_refresh_failed", result="success")
+    await repo.record(action="audit_repo_test.other_action", result="failure")
+
+    since = datetime.now(UTC) - timedelta(hours=1)
+    rows = await repo.list_recent_by_action(
+        "audit_repo_test.token_refresh_failed", since, result="failure"
+    )
+    assert len(rows) == 1
+    assert rows[0].result == "failure"
+
+
+async def test_list_recent_by_action_excludes_old_events(db_session: AsyncSession) -> None:
+    repo = PostgresAuditRepository(db_session)
+    await repo.record(action="audit_repo_test.stale_action", result="failure")
+
+    since = datetime.now(UTC) + timedelta(hours=1)
+    rows = await repo.list_recent_by_action("audit_repo_test.stale_action", since)
+    assert rows == []
