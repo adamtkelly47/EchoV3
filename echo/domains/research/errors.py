@@ -42,3 +42,13 @@ class InsiderNotFoundError(EchoError):
     retryable = False
     severity = Severity.LOW
     http_status = 404
+
+
+class PoliticianNotFoundError(EchoError):
+    """PROMPT.md Phase 19: no ingested PTR transaction history exists for
+    this `politician_bioguide_id` — mirrors `InsiderNotFoundError`."""
+
+    code = "politician_not_found"
+    retryable = False
+    severity = Severity.LOW
+    http_status = 404

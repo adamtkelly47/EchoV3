@@ -17,9 +17,17 @@ rather than registered with an adapter that would fail on first use.
 from __future__ import annotations
 
 from core.config import Settings
-from domains.research.service import Form4ProviderPort, NewsProviderPort, ResearchProviderPort
+from domains.research.service import (
+    Form4ProviderPort,
+    LegislatorReferencePort,
+    NewsProviderPort,
+    PtrProviderPort,
+    ResearchProviderPort,
+)
+from providers.research.congress_legislators.adapter import CongressLegislatorsAdapter
 from providers.research.finnhub.adapter import FinnhubAdapter
 from providers.research.sec_edgar.adapter import SecEdgarAdapter
+from providers.research.senate_efd.adapter import SenateEfdAdapter
 
 
 def build_research_providers(settings: Settings) -> dict[str, ResearchProviderPort]:
@@ -59,3 +67,29 @@ def build_form4_providers(settings: Settings) -> dict[str, Form4ProviderPort]:
     if settings.research_contact_email:
         providers["sec_edgar"] = SecEdgarAdapter(settings.research_contact_email)
     return providers
+
+
+def build_ptr_providers(settings: Settings) -> dict[str, PtrProviderPort]:
+    """PROMPT.md Phase 19. The Senate eFD system is the only real PTR
+    source this phase supports — the House Clerk's own disclosure system
+    publishes PTRs as scanned PDFs, not structured data (a documented scope
+    limitation, Docs/DECISION_LOG.md's Phase 19 entry) — but stays a dict
+    for the same forward-compatible-without-scaffolding reason as
+    `build_form4_providers`. Reuses `research_contact_email` for the same
+    fair-access User-Agent purpose as `SecEdgarAdapter`, not a new
+    credential."""
+    providers: dict[str, PtrProviderPort] = {}
+    if settings.research_contact_email:
+        providers["senate_efd"] = SenateEfdAdapter(settings.research_contact_email)
+    return providers
+
+
+def build_legislator_reference_provider(settings: Settings) -> LegislatorReferencePort | None:
+    """PROMPT.md Phase 19. Keyless and always available — no credential
+    gate, unlike every other provider factory here — since
+    `CongressLegislatorsAdapter` needs no API key or contact email at all.
+    The `| None` return type matches `ResearchService.__init__`'s own
+    `legislator_reference_provider: LegislatorReferencePort | None`
+    parameter, which lets tests construct a service with no reference
+    provider configured at all."""
+    return CongressLegislatorsAdapter()

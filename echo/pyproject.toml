@@ -25,6 +25,14 @@ dependencies = [
     # (a vulnerable statically-linked OpenSSL bundled in the wheel, fixed in
     # 48.0.1) plus three related PYSEC advisories on the same range.
     "cryptography>=48.0.1,<49",
+    # Parses the unitedstates/congress-legislators reference dataset
+    # (Phase 19) — that project ships YAML, not JSON, as its primary format.
+    "pyyaml>=6.0,<7.0",
+    # Parses the Senate eFD system's real transaction table HTML (Phase 19)
+    # — regex-scraping real, moderately nested government HTML (comment
+    # divs, inline links) is fragile; a real parser is the honest tool here,
+    # same reasoning as using stdlib xml.etree for Phase 18's Form 4 XML.
+    "beautifulsoup4>=4.12,<5.0",
 ]
 
 [project.optional-dependencies]
@@ -41,6 +49,8 @@ dev = [
     "pip-audit>=2.7,<2.8",
     "detect-secrets>=1.5,<1.6",
     "types-redis>=4.6,<5.0",
+    "types-PyYAML>=6.0,<7.0",
+    "types-beautifulsoup4>=4.12,<5.0",
 ]
 
 [build-system]

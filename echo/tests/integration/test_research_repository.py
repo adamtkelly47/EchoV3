@@ -4,6 +4,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from domains.research.repository import PostgresResearchRepository
 from domains.research.schemas import (
+    Chamber,
+    CommitteeAssignment,
     EventType,
     FilingContext,
     InsiderTransaction,
@@ -11,6 +13,9 @@ from domains.research.schemas import (
     NewsArticle,
     NewsDigest,
     NewsFeedback,
+    PoliticianOwner,
+    PoliticianTransaction,
+    PoliticianTransactionType,
     ProviderClaim,
     SecurityMasterEntry,
     TransactionType,
@@ -307,3 +312,133 @@ async def test_list_insider_transactions_for_insider_scopes_by_issuer_and_cik(
     matches = await repo.list_insider_transactions_for_insider("issuer_1", "0001234567")
     assert len(matches) == 1
     assert matches[0].transaction_id == target.transaction_id
+
+
+def _politician_transaction(**overrides: object) -> PoliticianTransaction:
+    defaults: dict[str, object] = {
+        "politician_bioguide_id": "A000376",
+        "politician_name": "Alan Armstrong",
+        "chamber": Chamber.SENATE,
+        "state": "WY",
+        "party": "Republican",
+        "report_id": "fda235b3-bad7-4637-8fa1-053f354d929c",
+        "filed_at": datetime(2026, 7, 21, tzinfo=UTC),
+        "transaction_date": datetime(2026, 3, 27, tzinfo=UTC),
+        "owner": PoliticianOwner.SELF,
+        "ticker": "UHS",
+        "asset_name": "Universal Health Services, Inc. Common Stock",
+        "asset_type": "Stock",
+        "transaction_type": PoliticianTransactionType.PURCHASE,
+        "range_low": 1001.0,
+        "range_high": 15000.0,
+        "filing_delay_days": 116,
+        "comment": None,
+        "source_record_id": "s1",
+        "synced_at": datetime(2026, 7, 21, tzinfo=UTC),
+    }
+    defaults.update(overrides)
+    return PoliticianTransaction(**defaults)  # type: ignore[arg-type]
+
+
+async def test_politician_transaction_save_and_round_trip(db_session: AsyncSession) -> None:
+    repo = PostgresResearchRepository(db_session)
+    transaction = _politician_transaction()
+    await repo.save_politician_transactions([transaction])
+
+    restored = await repo.list_politician_transactions_for_politician("A000376")
+    assert len(restored) == 1
+    assert restored[0].transaction_id == transaction.transaction_id
+    assert restored[0].chamber == Chamber.SENATE
+    assert restored[0].owner == PoliticianOwner.SELF
+    assert restored[0].transaction_type == PoliticianTransactionType.PURCHASE
+    assert restored[0].range_low == 1001.0
+    assert restored[0].range_high == 15000.0
+
+
+async def test_politician_transaction_open_ended_range_round_trips_as_none(
+    db_session: AsyncSession,
+) -> None:
+    """PROMPT.md Phase 19 verification 1: an open-ended "Over $X"
+    disclosure's `range_high` stays `None` through a real round trip, never
+    coerced into a fabricated ceiling."""
+    repo = PostgresResearchRepository(db_session)
+    transaction = _politician_transaction(range_low=50000000.0, range_high=None)
+    await repo.save_politician_transactions([transaction])
+
+    restored = await repo.list_politician_transactions_for_politician("A000376")
+    assert restored[0].range_high is None
+
+
+async def test_politician_transaction_save_upserts_by_transaction_id(
+    db_session: AsyncSession,
+) -> None:
+    """Mirrors the insider-transaction upsert test: re-saving the same
+    transaction_id (a real re-sync re-fetching the same report) updates the
+    row in place rather than duplicating it."""
+    repo = PostgresResearchRepository(db_session)
+    transaction = _politician_transaction()
+    await repo.save_politician_transactions([transaction])
+
+    enriched = transaction.model_copy(update={"party": "Independent"})
+    await repo.save_politician_transactions([enriched])
+
+    restored = await repo.list_politician_transactions_for_politician("A000376")
+    assert len(restored) == 1  # upserted, not duplicated
+    assert restored[0].party == "Independent"
+
+
+async def test_list_politician_transactions_for_ticker_scopes_correctly(
+    db_session: AsyncSession,
+) -> None:
+    repo = PostgresResearchRepository(db_session)
+    target = _politician_transaction(ticker="UHS")
+    other_ticker = _politician_transaction(
+        politician_bioguide_id="B000000", ticker="AAPL", report_id="other-report"
+    )
+    await repo.save_politician_transactions([target, other_ticker])
+
+    matches = await repo.list_politician_transactions_for_ticker("UHS")
+    assert len(matches) == 1
+    assert matches[0].transaction_id == target.transaction_id
+
+
+def _committee_assignment(**overrides: object) -> CommitteeAssignment:
+    defaults: dict[str, object] = {
+        "politician_bioguide_id": "A000376",
+        "committee_thomas_id": "SSBK",
+        "committee_name": "Senate Committee on Banking, Housing, and Urban Affairs",
+        "chamber": Chamber.SENATE,
+        "jurisdiction_text": "Banking and monetary policy.",
+        "source_record_id": "s1",
+        "synced_at": datetime(2026, 1, 1, tzinfo=UTC),
+    }
+    defaults.update(overrides)
+    return CommitteeAssignment(**defaults)  # type: ignore[arg-type]
+
+
+async def test_committee_assignment_save_and_round_trip(db_session: AsyncSession) -> None:
+    repo = PostgresResearchRepository(db_session)
+    assignment = _committee_assignment()
+    await repo.save_committee_assignments([assignment])
+
+    restored = await repo.list_committee_assignments_for_politician("A000376")
+    assert len(restored) == 1
+    assert restored[0].committee_thomas_id == "SSBK"
+    assert restored[0].jurisdiction_text == "Banking and monetary policy."
+
+
+async def test_committee_assignment_save_upserts_by_composite_key(
+    db_session: AsyncSession,
+) -> None:
+    """A re-synced snapshot overwrites the same (politician, committee)
+    row in place rather than accumulating stale duplicates."""
+    repo = PostgresResearchRepository(db_session)
+    assignment = _committee_assignment()
+    await repo.save_committee_assignments([assignment])
+
+    updated = assignment.model_copy(update={"jurisdiction_text": "Updated jurisdiction text."})
+    await repo.save_committee_assignments([updated])
+
+    restored = await repo.list_committee_assignments_for_politician("A000376")
+    assert len(restored) == 1
+    assert restored[0].jurisdiction_text == "Updated jurisdiction text."

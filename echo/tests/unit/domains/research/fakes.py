@@ -3,11 +3,13 @@ from __future__ import annotations
 from typing import Any
 
 from domains.research.schemas import (
+    CommitteeAssignment,
     InsiderTransaction,
     Issuer,
     NewsArticle,
     NewsDigest,
     NewsFeedback,
+    PoliticianTransaction,
     ProviderClaim,
     SecurityMasterEntry,
 )
@@ -23,6 +25,8 @@ class FakeResearchRepository:
         self.digests: list[NewsDigest] = []
         self.feedback: list[NewsFeedback] = []
         self.insider_transactions: dict[str, InsiderTransaction] = {}
+        self.politician_transactions: dict[str, PoliticianTransaction] = {}
+        self.committee_assignments: dict[tuple[str, str], CommitteeAssignment] = {}
 
     async def save_issuer(self, issuer: Issuer) -> Issuer:
         self.issuers[issuer.issuer_id] = issuer
@@ -105,6 +109,38 @@ class FakeResearchRepository:
             if t.issuer_id == issuer_id and t.insider_cik == insider_cik
         ]
 
+    async def save_politician_transactions(self, transactions: list[PoliticianTransaction]) -> None:
+        for transaction in transactions:
+            self.politician_transactions[transaction.transaction_id] = transaction
+
+    async def list_politician_transactions_for_politician(
+        self, politician_bioguide_id: str
+    ) -> list[PoliticianTransaction]:
+        return [
+            t
+            for t in self.politician_transactions.values()
+            if t.politician_bioguide_id == politician_bioguide_id
+        ]
+
+    async def list_politician_transactions_for_ticker(
+        self, ticker: str
+    ) -> list[PoliticianTransaction]:
+        return [t for t in self.politician_transactions.values() if t.ticker == ticker]
+
+    async def save_committee_assignments(self, assignments: list[CommitteeAssignment]) -> None:
+        for assignment in assignments:
+            key = (assignment.politician_bioguide_id, assignment.committee_thomas_id)
+            self.committee_assignments[key] = assignment
+
+    async def list_committee_assignments_for_politician(
+        self, politician_bioguide_id: str
+    ) -> list[CommitteeAssignment]:
+        return [
+            a
+            for a in self.committee_assignments.values()
+            if a.politician_bioguide_id == politician_bioguide_id
+        ]
+
 
 class FakeFinnhubProvider:
     def __init__(self) -> None:
@@ -159,6 +195,49 @@ class FakeForm4Provider:
         if self.raise_error:
             raise self.raise_error
         return self.documents_by_accession[accession_number]
+
+
+class FakePtrProvider:
+    def __init__(self) -> None:
+        self.filings: list[dict[str, Any]] = []
+        self.documents_by_report_id: dict[str, dict[str, Any]] = {}
+        self.raise_error: Exception | None = None
+        self.calls: list[str] = []
+
+    async def list_ptr_filings(self, *, start_date: str, limit: int = 50) -> list[dict[str, Any]]:
+        self.calls.append(start_date)
+        if self.raise_error:
+            raise self.raise_error
+        return self.filings[:limit]
+
+    async def get_ptr_transactions(self, report_id: str) -> dict[str, Any]:
+        self.calls.append(report_id)
+        if self.raise_error:
+            raise self.raise_error
+        return self.documents_by_report_id[report_id]
+
+
+class FakeLegislatorReferenceProvider:
+    def __init__(self) -> None:
+        self.legislators: list[dict[str, Any]] = []
+        self.committees: list[dict[str, Any]] = []
+        self.committee_membership: dict[str, Any] = {}
+        self.raise_error: Exception | None = None
+
+    async def get_legislators(self) -> list[dict[str, Any]]:
+        if self.raise_error:
+            raise self.raise_error
+        return self.legislators
+
+    async def get_committees(self) -> list[dict[str, Any]]:
+        if self.raise_error:
+            raise self.raise_error
+        return self.committees
+
+    async def get_committee_membership(self) -> dict[str, Any]:
+        if self.raise_error:
+            raise self.raise_error
+        return self.committee_membership
 
 
 class FakeSourceRecordRepository:

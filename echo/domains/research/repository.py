@@ -14,12 +14,14 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Protocol
 
-from sqlalchemy import Boolean, DateTime, Float, String, select
+from sqlalchemy import Boolean, DateTime, Float, Integer, String, select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Mapped, mapped_column
 
 from domains.research.schemas import (
+    Chamber,
+    CommitteeAssignment,
     EventType,
     FieldConflict,
     FilingContext,
@@ -28,6 +30,9 @@ from domains.research.schemas import (
     NewsArticle,
     NewsDigest,
     NewsFeedback,
+    PoliticianOwner,
+    PoliticianTransaction,
+    PoliticianTransactionType,
     ProviderClaim,
     SecurityMasterEntry,
     TransactionType,
@@ -179,6 +184,86 @@ def _row_to_insider_transaction(row: InsiderTransactionRow) -> InsiderTransactio
     )
 
 
+class PoliticianTransactionRow(Base):
+    __tablename__ = "research_politician_transactions"
+
+    transaction_id: Mapped[str] = mapped_column(String, primary_key=True)
+    politician_bioguide_id: Mapped[str | None] = mapped_column(String, index=True)
+    politician_name: Mapped[str] = mapped_column(String)
+    chamber: Mapped[str] = mapped_column(String)
+    state: Mapped[str | None] = mapped_column(String)
+    party: Mapped[str | None] = mapped_column(String)
+    report_id: Mapped[str] = mapped_column(String, index=True)
+    filed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    transaction_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    owner: Mapped[str] = mapped_column(String)
+    ticker: Mapped[str | None] = mapped_column(String, index=True)
+    asset_name: Mapped[str] = mapped_column(String)
+    asset_type: Mapped[str] = mapped_column(String)
+    transaction_type: Mapped[str] = mapped_column(String)
+    range_low: Mapped[float] = mapped_column(Float)
+    range_high: Mapped[float | None] = mapped_column(Float)
+    filing_delay_days: Mapped[int] = mapped_column(Integer)
+    comment: Mapped[str | None] = mapped_column(String)
+    source_record_id: Mapped[str] = mapped_column(String)
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class CommitteeAssignmentRow(Base):
+    """Primary key is the natural `(politician_bioguide_id,
+    committee_thomas_id)` pair, not a synthetic id — this is a resynced
+    snapshot (Docs/DECISION_LOG.md's Phase 19 entry), not an
+    independently-lifecycled record, so there's no separate identity worth
+    inventing beyond the membership relationship itself."""
+
+    __tablename__ = "research_committee_assignments"
+
+    politician_bioguide_id: Mapped[str] = mapped_column(String, primary_key=True, index=True)
+    committee_thomas_id: Mapped[str] = mapped_column(String, primary_key=True, index=True)
+    committee_name: Mapped[str] = mapped_column(String)
+    chamber: Mapped[str] = mapped_column(String)
+    jurisdiction_text: Mapped[str | None] = mapped_column(String)
+    source_record_id: Mapped[str] = mapped_column(String)
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+def _row_to_politician_transaction(row: PoliticianTransactionRow) -> PoliticianTransaction:
+    return PoliticianTransaction(
+        transaction_id=row.transaction_id,
+        politician_bioguide_id=row.politician_bioguide_id,
+        politician_name=row.politician_name,
+        chamber=Chamber(row.chamber),
+        state=row.state,
+        party=row.party,
+        report_id=row.report_id,
+        filed_at=row.filed_at,
+        transaction_date=row.transaction_date,
+        owner=PoliticianOwner(row.owner),
+        ticker=row.ticker,
+        asset_name=row.asset_name,
+        asset_type=row.asset_type,
+        transaction_type=PoliticianTransactionType(row.transaction_type),
+        range_low=row.range_low,
+        range_high=row.range_high,
+        filing_delay_days=row.filing_delay_days,
+        comment=row.comment,
+        source_record_id=row.source_record_id,
+        synced_at=row.synced_at,
+    )
+
+
+def _row_to_committee_assignment(row: CommitteeAssignmentRow) -> CommitteeAssignment:
+    return CommitteeAssignment(
+        politician_bioguide_id=row.politician_bioguide_id,
+        committee_thomas_id=row.committee_thomas_id,
+        committee_name=row.committee_name,
+        chamber=Chamber(row.chamber),
+        jurisdiction_text=row.jurisdiction_text,
+        source_record_id=row.source_record_id,
+        synced_at=row.synced_at,
+    )
+
+
 def _row_to_article(row: NewsArticleRow) -> NewsArticle:
     return NewsArticle(
         article_id=row.article_id,
@@ -284,6 +369,21 @@ class ResearchRepository(Protocol):
     async def list_insider_transactions_for_insider(
         self, issuer_id: str, insider_cik: str
     ) -> list[InsiderTransaction]: ...
+    async def save_politician_transactions(
+        self, transactions: list[PoliticianTransaction]
+    ) -> None: ...
+    async def list_politician_transactions_for_politician(
+        self, politician_bioguide_id: str
+    ) -> list[PoliticianTransaction]: ...
+    async def list_politician_transactions_for_ticker(
+        self, ticker: str
+    ) -> list[PoliticianTransaction]: ...
+    async def save_committee_assignments(
+        self, assignments: list[CommitteeAssignment]
+    ) -> None: ...
+    async def list_committee_assignments_for_politician(
+        self, politician_bioguide_id: str
+    ) -> list[CommitteeAssignment]: ...
 
 
 class PostgresResearchRepository:
@@ -516,3 +616,87 @@ class PostgresResearchRepository:
             )
         )
         return [_row_to_insider_transaction(row) for row in result.scalars().all()]
+
+    async def save_politician_transactions(self, transactions: list[PoliticianTransaction]) -> None:
+        """Upsert by `transaction_id` — same enrich-in-place discipline as
+        `save_insider_transactions`, load-bearing for the same reason
+        (Docs/DECISION_LOG.md's Phase 18 entry): any re-sync re-fetches the
+        same recent reports, and `parse_ptr_transactions` derives a
+        deterministic `transaction_id`, so re-ingestion must resolve to the
+        same rows."""
+        for txn in transactions:
+            row = await self._session.get(PoliticianTransactionRow, txn.transaction_id)
+            if row is None:
+                row = PoliticianTransactionRow(transaction_id=txn.transaction_id)
+                self._session.add(row)
+            row.politician_bioguide_id = txn.politician_bioguide_id
+            row.politician_name = txn.politician_name
+            row.chamber = txn.chamber.value
+            row.state = txn.state
+            row.party = txn.party
+            row.report_id = txn.report_id
+            row.filed_at = txn.filed_at
+            row.transaction_date = txn.transaction_date
+            row.owner = txn.owner.value
+            row.ticker = txn.ticker
+            row.asset_name = txn.asset_name
+            row.asset_type = txn.asset_type
+            row.transaction_type = txn.transaction_type.value
+            row.range_low = txn.range_low
+            row.range_high = txn.range_high
+            row.filing_delay_days = txn.filing_delay_days
+            row.comment = txn.comment
+            row.source_record_id = txn.source_record_id
+            row.synced_at = txn.synced_at
+        await self._session.flush()
+
+    async def list_politician_transactions_for_politician(
+        self, politician_bioguide_id: str
+    ) -> list[PoliticianTransaction]:
+        result = await self._session.execute(
+            select(PoliticianTransactionRow).where(
+                PoliticianTransactionRow.politician_bioguide_id == politician_bioguide_id
+            )
+        )
+        return [_row_to_politician_transaction(row) for row in result.scalars().all()]
+
+    async def list_politician_transactions_for_ticker(
+        self, ticker: str
+    ) -> list[PoliticianTransaction]:
+        result = await self._session.execute(
+            select(PoliticianTransactionRow).where(PoliticianTransactionRow.ticker == ticker)
+        )
+        return [_row_to_politician_transaction(row) for row in result.scalars().all()]
+
+    async def save_committee_assignments(self, assignments: list[CommitteeAssignment]) -> None:
+        """Upsert by the natural `(politician_bioguide_id,
+        committee_thomas_id)` key — re-syncing the reference dataset
+        overwrites each politician's assignment rows in place rather than
+        accumulating stale ones from a prior snapshot."""
+        for assignment in assignments:
+            row = await self._session.get(
+                CommitteeAssignmentRow,
+                (assignment.politician_bioguide_id, assignment.committee_thomas_id),
+            )
+            if row is None:
+                row = CommitteeAssignmentRow(
+                    politician_bioguide_id=assignment.politician_bioguide_id,
+                    committee_thomas_id=assignment.committee_thomas_id,
+                )
+                self._session.add(row)
+            row.committee_name = assignment.committee_name
+            row.chamber = assignment.chamber.value
+            row.jurisdiction_text = assignment.jurisdiction_text
+            row.source_record_id = assignment.source_record_id
+            row.synced_at = assignment.synced_at
+        await self._session.flush()
+
+    async def list_committee_assignments_for_politician(
+        self, politician_bioguide_id: str
+    ) -> list[CommitteeAssignment]:
+        result = await self._session.execute(
+            select(CommitteeAssignmentRow).where(
+                CommitteeAssignmentRow.politician_bioguide_id == politician_bioguide_id
+            )
+        )
+        return [_row_to_committee_assignment(row) for row in result.scalars().all()]

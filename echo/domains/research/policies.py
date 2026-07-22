@@ -8,17 +8,24 @@ into Research's own vocabulary.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from core.identifiers import new_id
 from domains.research.schemas import (
     AnomalyFeature,
+    Chamber,
+    CommitteeAssignment,
     EventType,
     FieldConflict,
     InsiderProfile,
     InsiderTransaction,
     NewsArticle,
+    PoliticianOwner,
+    PoliticianTradeProfile,
+    PoliticianTransaction,
+    PoliticianTransactionType,
     ProviderClaim,
     TransactionType,
 )
@@ -593,3 +600,429 @@ def compute_insider_profile(
         first_transaction_date=min(dates),
         last_transaction_date=max(dates),
     )
+
+
+# PROMPT.md Phase 19 verification 1: "transaction ranges are not converted
+# into false exact amounts." A Periodic Transaction Report's own "Amount"
+# column is always one of these two real shapes — a bounded bracket
+# ("$1,001 - $15,000") or an open-ended one ("Over $50,000,000") — never an
+# exact figure, since the Ethics in Government Act (extended to securities
+# by the STOCK Act) has never required exact dollar disclosure.
+_AMOUNT_RANGE_RE = re.compile(r"\$([\d,]+)\s*-\s*\$([\d,]+)")
+_AMOUNT_OVER_RE = re.compile(r"Over\s*\$([\d,]+)", re.IGNORECASE)
+
+_POLITICIAN_TRANSACTION_TYPE_MAP: dict[str, PoliticianTransactionType] = {
+    "purchase": PoliticianTransactionType.PURCHASE,
+    "sale (full)": PoliticianTransactionType.SALE_FULL,
+    "sale (partial)": PoliticianTransactionType.SALE_PARTIAL,
+    "exchange": PoliticianTransactionType.EXCHANGE,
+}
+
+_POLITICIAN_OWNER_MAP: dict[str, PoliticianOwner] = {
+    "self": PoliticianOwner.SELF,
+    "spouse": PoliticianOwner.SPOUSE,
+    "joint": PoliticianOwner.JOINT,
+    "dependent child": PoliticianOwner.DEPENDENT_CHILD,
+}
+
+# STOCK Act (5 U.S.C. app. § 103(l)): a Periodic Transaction Report is due
+# within 45 days of the transaction. PROMPT.md Phase 19 implement item 6.
+_STOCK_ACT_FILING_DEADLINE_DAYS = 45
+
+# PROMPT.md Phase 19 implement item 10: "evidence based anomaly
+# candidates." Same personal-baseline discipline as Phase 18's
+# `_SIZE_ANOMALY_RATIO_THRESHOLD`/`_CLUSTER_*` constants — compared against
+# the politician's *own* history or a real, bounded time window, never a
+# market-wide benchmark.
+_BRACKET_ANOMALY_RATIO_THRESHOLD = 3.0
+_CONGRESS_CLUSTER_WINDOW = timedelta(days=7)
+_CONGRESS_CLUSTER_MEMBER_THRESHOLD = 3
+
+_NAME_SUFFIX_RE = re.compile(r"\s*,?\s*(jr\.?|sr\.?|ii|iii|iv)\s*$", re.IGNORECASE)
+_STOPWORDS = {"and", "the", "of", "for", "on", "in", "to", "a", "or", "as", "at", "by"}
+
+
+def normalize_politician_transaction_type(raw_type: str) -> PoliticianTransactionType:
+    return _POLITICIAN_TRANSACTION_TYPE_MAP.get(
+        raw_type.strip().lower(), PoliticianTransactionType.OTHER
+    )
+
+
+def normalize_politician_owner(raw_owner: str) -> PoliticianOwner:
+    return _POLITICIAN_OWNER_MAP.get(raw_owner.strip().lower(), PoliticianOwner.OTHER)
+
+
+def parse_ptr_amount_range(text: str) -> tuple[float, float | None]:
+    """PROMPT.md Phase 19 verification 1: returns the two real disclosed
+    boundary figures, never collapsed into one fabricated point value.
+    `None` as the high boundary means a genuinely open-ended "Over $X"
+    disclosure — a real value, not a missing one. Raises `ValueError` for
+    any other shape, so a malformed row is skipped by its caller rather
+    than silently assigned a wrong range."""
+    range_match = _AMOUNT_RANGE_RE.search(text)
+    if range_match:
+        return (
+            float(range_match.group(1).replace(",", "")),
+            float(range_match.group(2).replace(",", "")),
+        )
+    over_match = _AMOUNT_OVER_RE.search(text)
+    if over_match:
+        return float(over_match.group(1).replace(",", "")), None
+    raise ValueError(f"unrecognized PTR amount format: {text!r}")
+
+
+def compute_filing_delay_days(filed_at: datetime, transaction_date: datetime) -> int:
+    return (filed_at - transaction_date).days
+
+
+def is_filing_late(filing_delay_days: int) -> bool:
+    """PROMPT.md Phase 19 implement item 6: "filing delay.\""""
+    return filing_delay_days > _STOCK_ACT_FILING_DEADLINE_DAYS
+
+
+def parse_ptr_transactions(
+    raw: dict[str, Any],
+    *,
+    report_id: str,
+    politician_name: str,
+    politician_bioguide_id: str | None,
+    state: str | None,
+    party: str | None,
+    filed_at: datetime,
+    source_record_id: str,
+    now: datetime,
+) -> list[PoliticianTransaction]:
+    """Translates one PTR's raw dict (`providers.research.senate_efd.
+    adapter._parse_ptr_html`'s output) into typed, normalized transactions.
+    A row with an unparseable date or amount is skipped rather than
+    half-recorded, matching every other parser in this codebase.
+
+    `transaction_id` is derived deterministically from `(report_id,
+    index-within-filing)` rather than a random default — the same fix
+    Phase 18 had to apply live, after discovering it corrupted stored
+    history on re-ingestion (Docs/DECISION_LOG.md's Phase 18 entry).
+    Applied here from the start rather than rediscovered: any scheduled
+    re-sync will re-fetch the same recent reports, and
+    `ResearchRepository.save_politician_transactions` upserts by
+    `transaction_id`, so it must resolve to the same rows every time."""
+    transactions = []
+    for index, item in enumerate(raw.get("transactions", [])):
+        date_str = item.get("transaction_date")
+        amount_text = item.get("amount_text")
+        owner_text = item.get("owner")
+        type_text = item.get("transaction_type")
+        asset_name = item.get("asset_name")
+        if not date_str or not amount_text or not owner_text or not type_text or not asset_name:
+            continue
+        try:
+            transaction_date = datetime.strptime(date_str, "%m/%d/%Y").replace(tzinfo=UTC)
+            range_low, range_high = parse_ptr_amount_range(amount_text)
+        except ValueError:
+            continue
+        comment = item.get("comment")
+        comment = None if not comment or comment == "--" else comment
+        transactions.append(
+            PoliticianTransaction(
+                transaction_id=f"politiciantxn_{report_id}_{index}",
+                politician_bioguide_id=politician_bioguide_id,
+                politician_name=politician_name,
+                chamber=Chamber.SENATE,
+                state=state,
+                party=party,
+                report_id=report_id,
+                filed_at=filed_at,
+                transaction_date=transaction_date,
+                owner=normalize_politician_owner(owner_text),
+                ticker=item.get("ticker") or None,
+                asset_name=asset_name,
+                asset_type=item.get("asset_type") or "",
+                transaction_type=normalize_politician_transaction_type(type_text),
+                range_low=range_low,
+                range_high=range_high,
+                filing_delay_days=compute_filing_delay_days(filed_at, transaction_date),
+                comment=comment,
+                source_record_id=source_record_id,
+                synced_at=now,
+            )
+        )
+    return transactions
+
+
+def _normalize_name_part(text: str) -> str:
+    cleaned = _NAME_SUFFIX_RE.sub("", text.strip())
+    return " ".join(cleaned.replace(",", " ").split()).lower()
+
+
+def resolve_politician_identity(
+    *, first_name: str, last_name: str, reference_date: datetime, legislators: list[dict[str, Any]]
+) -> dict[str, str | None]:
+    """PROMPT.md Phase 19 implement item 2: "politician identity." The
+    Senate eFD system's own `first_name`/`last_name` fields are real but
+    inconsistently formatted — trailing commas, embedded suffixes, middle
+    initials (e.g. "Moran,  " / "Thomas H" / "A. Mitchell") — confirmed live
+    across a real sample of filings before this function was written.
+    Matches primarily on a normalized last name against currently-serving
+    senators (a legislator with at least one `"sen"` term in the reference
+    dataset); disambiguates by first-name token only when more than one
+    legislator shares that last name. No match, or a still-ambiguous one,
+    resolves every field to `None` — "missing stays missing"
+    (Docs/DATA_MODEL.md), never a guessed identity."""
+    normalized_last = _normalize_name_part(last_name)
+    normalized_first_token = _normalize_name_part(first_name).split(" ")[0] if first_name else ""
+
+    senators = [
+        leg for leg in legislators if any(t.get("type") == "sen" for t in leg.get("terms", []))
+    ]
+    candidates = [
+        leg for leg in senators if _normalize_name_part(leg["name"]["last"]) == normalized_last
+    ]
+    if len(candidates) > 1:
+        candidates = [
+            leg
+            for leg in candidates
+            if _normalize_name_part(leg["name"]["first"]).split(" ")[0] == normalized_first_token
+        ]
+    if len(candidates) != 1:
+        return {"bioguide_id": None, "state": None, "party": None}
+
+    legislator = candidates[0]
+    bioguide_id = legislator.get("id", {}).get("bioguide")
+    sen_terms = [t for t in legislator.get("terms", []) if t.get("type") == "sen"]
+    matching_term = next(
+        (
+            t
+            for t in sen_terms
+            if t.get("start")
+            and t.get("end")
+            and datetime.fromisoformat(t["start"]).replace(tzinfo=UTC)
+            <= reference_date
+            <= datetime.fromisoformat(t["end"]).replace(tzinfo=UTC)
+        ),
+        sen_terms[-1] if sen_terms else None,
+    )
+    return {
+        "bioguide_id": bioguide_id,
+        "state": matching_term.get("state") if matching_term else None,
+        "party": matching_term.get("party") if matching_term else None,
+    }
+
+
+def build_committee_assignments(
+    politician_bioguide_id: str,
+    committee_membership: dict[str, Any],
+    committees_by_thomas_id: dict[str, dict[str, Any]],
+    source_record_id: str,
+    now: datetime,
+) -> list[CommitteeAssignment]:
+    """PROMPT.md Phase 19 implement item 3: "committee assignment history."
+    Only *full committee* memberships are recorded, not subcommittees — the
+    reference dataset keys subcommittee membership under separate,
+    numbered keys (e.g. `SSAF13`) that don't resolve against
+    `committees-current.yaml`'s own top-level `thomas_id`s, and a phase-19
+    scope decision keeps this to the coarser, more legislatively
+    significant full-committee level (Docs/DECISION_LOG.md's Phase 19
+    entry). Only Senate committees are included, matching this phase's
+    Senate-only PTR ingestion scope."""
+    assignments = []
+    for thomas_id, members in committee_membership.items():
+        if not any(m.get("bioguide") == politician_bioguide_id for m in members):
+            continue
+        committee = committees_by_thomas_id.get(thomas_id)
+        if committee is None or committee.get("type") != "senate":
+            continue
+        assignments.append(
+            CommitteeAssignment(
+                politician_bioguide_id=politician_bioguide_id,
+                committee_thomas_id=thomas_id,
+                committee_name=committee.get("name", thomas_id),
+                chamber=Chamber.SENATE,
+                jurisdiction_text=committee.get("jurisdiction"),
+                source_record_id=source_record_id,
+                synced_at=now,
+            )
+        )
+    return assignments
+
+
+def compute_politician_trade_profile(
+    politician_bioguide_id: str, politician_name: str, transactions: list[PoliticianTransaction]
+) -> PoliticianTradeProfile | None:
+    """PROMPT.md Phase 19 implement item 8: "historical trade profiles."
+    `None` when there's no transaction history — an empty profile would be
+    a fabricated zero, matching `compute_insider_profile`'s own discipline.
+    Purchase/sale totals sum each transaction's own disclosed range
+    boundary independently (never averaged into one number) — a genuine
+    range aggregate, the same verification-1 discipline applied to the
+    profile as to each individual transaction."""
+    if not transactions:
+        return None
+    purchases = [t for t in transactions if t.transaction_type == PoliticianTransactionType.PURCHASE]
+    sales = [
+        t
+        for t in transactions
+        if t.transaction_type
+        in (PoliticianTransactionType.SALE_FULL, PoliticianTransactionType.SALE_PARTIAL)
+    ]
+
+    def _range_totals(items: list[PoliticianTransaction]) -> tuple[float, float | None]:
+        low_total = round(sum(t.range_low for t in items), 2)
+        high_total: float | None = 0.0
+        for t in items:
+            if t.range_high is None:
+                high_total = None
+                break
+            high_total = (high_total or 0.0) + t.range_high
+        return low_total, (round(high_total, 2) if high_total is not None else None)
+
+    purchased_low, purchased_high = _range_totals(purchases)
+    sold_low, sold_high = _range_totals(sales)
+    dates = [t.transaction_date for t in transactions]
+    return PoliticianTradeProfile(
+        politician_bioguide_id=politician_bioguide_id,
+        politician_name=politician_name,
+        transaction_count=len(transactions),
+        total_purchased_range_low=purchased_low,
+        total_purchased_range_high=purchased_high,
+        total_sold_range_low=sold_low,
+        total_sold_range_high=sold_high,
+        first_transaction_date=min(dates),
+        last_transaction_date=max(dates),
+    )
+
+
+def compute_bracket_size_anomaly(
+    transaction: PoliticianTransaction, politician_history: list[PoliticianTransaction]
+) -> AnomalyFeature | None:
+    """PROMPT.md Phase 19 verification 4: "every relationship can be
+    inspected" applied to a size signal — compares the transaction's own
+    disclosed range *floor* against the politician's own average disclosed
+    range floor. Deliberately never converts either figure into a claimed
+    exact amount (verification 1); `baseline_description` says so
+    explicitly. Requires at least 2 prior transactions to establish a real
+    baseline, matching `compute_size_anomaly`'s own discipline."""
+    prior = [
+        t
+        for t in politician_history
+        if t.transaction_id != transaction.transaction_id
+        and t.transaction_date < transaction.transaction_date
+    ]
+    if len(prior) < 2:
+        return None
+    average_range_low = sum(t.range_low for t in prior) / len(prior)
+    if average_range_low <= 0:
+        return None
+    ratio = round(transaction.range_low / average_range_low, 2)
+    return AnomalyFeature(
+        feature_name="disclosed_bracket_vs_personal_baseline",
+        value=ratio,
+        baseline_description=(
+            f"this transaction's disclosed range floor (${transaction.range_low:,.0f}) is {ratio}x "
+            "the politician's own average disclosed range floor "
+            f"(${round(average_range_low, 2):,.0f}) across their {len(prior)} prior recorded "
+            "transactions — a comparison of disclosed bracket floors, never an exact transaction "
+            "amount"
+        ),
+        is_notable=ratio >= _BRACKET_ANOMALY_RATIO_THRESHOLD,
+    )
+
+
+def compute_politician_cluster_feature(
+    transaction: PoliticianTransaction, ticker_transactions: list[PoliticianTransaction]
+) -> AnomalyFeature | None:
+    """Distinct members of Congress trading the same ticker in the same
+    direction within a short window — the same real, well-known signal as
+    `compute_insider_cluster_feature` (Phase 18), computed here as a count
+    with an explicit, stated window and comparison set (verification 4).
+    `None` for `EXCHANGE`/`OTHER` transaction types, which have no single
+    "direction" to cluster on."""
+    if transaction.transaction_type not in (
+        PoliticianTransactionType.PURCHASE,
+        PoliticianTransactionType.SALE_FULL,
+        PoliticianTransactionType.SALE_PARTIAL,
+    ):
+        return None
+    is_sale = transaction.transaction_type != PoliticianTransactionType.PURCHASE
+    window_start = transaction.transaction_date - _CONGRESS_CLUSTER_WINDOW
+    window_end = transaction.transaction_date + _CONGRESS_CLUSTER_WINDOW
+
+    def _same_direction(candidate: PoliticianTransaction) -> bool:
+        candidate_is_sale = candidate.transaction_type in (
+            PoliticianTransactionType.SALE_FULL,
+            PoliticianTransactionType.SALE_PARTIAL,
+        )
+        candidate_is_purchase = candidate.transaction_type == PoliticianTransactionType.PURCHASE
+        if not (candidate_is_sale or candidate_is_purchase):
+            return False
+        return candidate_is_sale == is_sale
+
+    distinct_members = {
+        candidate.politician_bioguide_id or candidate.politician_name
+        for candidate in ticker_transactions
+        if _same_direction(candidate) and window_start <= candidate.transaction_date <= window_end
+    }
+    count = len(distinct_members)
+    direction = "sales" if is_sale else "purchases"
+    return AnomalyFeature(
+        feature_name="congressional_cluster_timing",
+        value=float(count),
+        baseline_description=(
+            f"{count} distinct member(s) of Congress recorded a {direction[:-1]} transaction in "
+            f"{transaction.ticker or transaction.asset_name} within "
+            f"{_CONGRESS_CLUSTER_WINDOW.days} days of this one (including this transaction's own "
+            "filer)"
+        ),
+        is_notable=count >= _CONGRESS_CLUSTER_MEMBER_THRESHOLD,
+    )
+
+
+def _significant_tokens(text: str) -> set[str]:
+    return {w for w in re.findall(r"[a-z]+", text.lower()) if len(w) >= 4 and w not in _STOPWORDS}
+
+
+def compute_committee_relationship_features(
+    transaction: PoliticianTransaction,
+    committee_assignments: list[CommitteeAssignment],
+    industry: str | None,
+) -> list[AnomalyFeature]:
+    """PROMPT.md Phase 19 implement item 9 / verification 3 & 4: a
+    deterministic keyword overlap between the traded issuer's real industry
+    classification (already resolved by this same Research domain's own
+    `sync_issuer`/`get_issuer_by_ticker`, Phase 16) and each committee's
+    own real, published jurisdiction text — never a model-generated
+    relevance judgment. Returns one feature per matching committee (a
+    politician can sit on more than one relevant committee); each feature
+    names the exact committee, quotes its real jurisdiction text, and lists
+    the matched term(s), so the relationship can be inspected in full
+    (verification 4) rather than reduced to a bare score. The
+    `baseline_description` explicitly disclaims any inference about
+    intent or influence (verification 3: "correlation is not described as
+    proof of misconduct") — this is a keyword overlap, not an accusation."""
+    if not industry:
+        return []
+    industry_tokens = _significant_tokens(industry)
+    if not industry_tokens:
+        return []
+    features = []
+    for assignment in committee_assignments:
+        if not assignment.jurisdiction_text:
+            continue
+        jurisdiction_tokens = _significant_tokens(assignment.jurisdiction_text)
+        matched = sorted(industry_tokens & jurisdiction_tokens)
+        if not matched:
+            continue
+        excerpt = assignment.jurisdiction_text[:200]
+        features.append(
+            AnomalyFeature(
+                feature_name="committee_jurisdiction_overlap",
+                value=float(len(matched)),
+                baseline_description=(
+                    f'{assignment.committee_name}\'s real, published jurisdiction ("{excerpt}") '
+                    f"shares the term(s) {', '.join(matched)} with "
+                    f"{transaction.ticker or transaction.asset_name}'s industry classification "
+                    f'("{industry}") — a keyword overlap, not a claim about this politician\'s '
+                    "actual influence, involvement, or intent"
+                ),
+                is_notable=True,
+            )
+        )
+    return features

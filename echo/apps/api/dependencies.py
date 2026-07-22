@@ -25,7 +25,9 @@ from application.orchestrators.news_intelligence import NewsIntelligenceOrchestr
 from application.portfolio_provider_factory import build_schwab_provider
 from application.research_provider_factory import (
     build_form4_providers,
+    build_legislator_reference_provider,
     build_news_providers,
+    build_ptr_providers,
     build_research_providers,
 )
 from core.config import get_settings
@@ -55,7 +57,9 @@ from domains.portfolio.service import PortfolioProviderPort, PortfolioService
 from domains.research.repository import PostgresResearchRepository
 from domains.research.service import (
     Form4ProviderPort,
+    LegislatorReferencePort,
     NewsProviderPort,
+    PtrProviderPort,
     ResearchProviderPort,
     ResearchService,
 )
@@ -92,6 +96,16 @@ def get_news_providers() -> dict[str, NewsProviderPort]:
 @lru_cache
 def get_form4_providers() -> dict[str, Form4ProviderPort]:
     return build_form4_providers(get_settings())
+
+
+@lru_cache
+def get_ptr_providers() -> dict[str, PtrProviderPort]:
+    return build_ptr_providers(get_settings())
+
+
+@lru_cache
+def get_legislator_reference_provider() -> LegislatorReferencePort | None:
+    return build_legislator_reference_provider(get_settings())
 
 
 @lru_cache
@@ -226,6 +240,8 @@ def get_research_service(
         SystemClock(),
         get_news_providers(),
         get_form4_providers(),
+        get_ptr_providers(),
+        get_legislator_reference_provider(),
     )
 
 

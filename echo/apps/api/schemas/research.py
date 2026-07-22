@@ -152,3 +152,56 @@ class InsiderInterpretationResponse(BaseModel):
     issuer_id: str
     insider_cik: str
     interpretation: str
+
+
+class PoliticianTransactionResponse(BaseModel):
+    transaction_id: str
+    politician_bioguide_id: str | None
+    politician_name: str
+    chamber: str
+    state: str | None
+    party: str | None
+    report_id: str
+    filed_at: datetime
+    transaction_date: datetime
+    owner: str
+    ticker: str | None
+    asset_name: str
+    asset_type: str
+    transaction_type: str
+    range_low: float
+    range_high: float | None
+    filing_delay_days: int
+    is_filing_late: bool
+    comment: str | None
+    synced_at: datetime
+
+
+class PoliticianTradeProfileResponse(BaseModel):
+    politician_bioguide_id: str
+    politician_name: str
+    transaction_count: int
+    total_purchased_range_low: float
+    total_purchased_range_high: float | None
+    total_sold_range_low: float
+    total_sold_range_high: float | None
+    first_transaction_date: datetime
+    last_transaction_date: datetime
+
+
+class CommitteeAssignmentResponse(BaseModel):
+    politician_bioguide_id: str
+    committee_thomas_id: str
+    committee_name: str
+    chamber: str
+    jurisdiction_text: str | None
+    synced_at: datetime
+
+
+class PoliticianEvidenceResponse(BaseModel):
+    politician_bioguide_id: str
+    transactions: list[PoliticianTransactionResponse]
+    profile: PoliticianTradeProfileResponse | None
+    committee_assignments: list[CommitteeAssignmentResponse]
+    anomalies: list[AnomalyFeatureResponse]
+    generated_at: datetime

@@ -19,6 +19,7 @@ from apps.api.dependencies import (
 )
 from apps.api.schemas.research import (
     AnomalyFeatureResponse,
+    CommitteeAssignmentResponse,
     EvidencePackageResponse,
     FeedbackRequest,
     FeedbackResponse,
@@ -30,15 +31,21 @@ from apps.api.schemas.research import (
     IssuerResponse,
     NewsArticleResponse,
     NewsDigestResponse,
+    PoliticianEvidenceResponse,
+    PoliticianTradeProfileResponse,
+    PoliticianTransactionResponse,
     ProviderClaimResponse,
     SecurityResponse,
 )
+from domains.research.policies import is_filing_late
 from domains.research.schemas import (
     EvidencePackage,
     InsiderEvidenceView,
     Issuer,
     NewsArticle,
     NewsDigest,
+    PoliticianEvidenceView,
+    PoliticianTransaction,
 )
 from domains.research.service import ResearchService
 
@@ -336,3 +343,98 @@ async def interpret_insider_activity(
     return InsiderInterpretationResponse(
         issuer_id=issuer_id, insider_cik=insider_cik, interpretation=interpretation
     )
+
+
+def _to_politician_transaction_response(t: PoliticianTransaction) -> PoliticianTransactionResponse:
+    return PoliticianTransactionResponse(
+        transaction_id=t.transaction_id,
+        politician_bioguide_id=t.politician_bioguide_id,
+        politician_name=t.politician_name,
+        chamber=t.chamber.value,
+        state=t.state,
+        party=t.party,
+        report_id=t.report_id,
+        filed_at=t.filed_at,
+        transaction_date=t.transaction_date,
+        owner=t.owner.value,
+        ticker=t.ticker,
+        asset_name=t.asset_name,
+        asset_type=t.asset_type,
+        transaction_type=t.transaction_type.value,
+        range_low=t.range_low,
+        range_high=t.range_high,
+        filing_delay_days=t.filing_delay_days,
+        is_filing_late=is_filing_late(t.filing_delay_days),
+        comment=t.comment,
+        synced_at=t.synced_at,
+    )
+
+
+def _to_politician_evidence_response(evidence: PoliticianEvidenceView) -> PoliticianEvidenceResponse:
+    return PoliticianEvidenceResponse(
+        politician_bioguide_id=evidence.politician_bioguide_id,
+        transactions=[_to_politician_transaction_response(t) for t in evidence.transactions],
+        profile=(
+            PoliticianTradeProfileResponse(
+                politician_bioguide_id=evidence.profile.politician_bioguide_id,
+                politician_name=evidence.profile.politician_name,
+                transaction_count=evidence.profile.transaction_count,
+                total_purchased_range_low=evidence.profile.total_purchased_range_low,
+                total_purchased_range_high=evidence.profile.total_purchased_range_high,
+                total_sold_range_low=evidence.profile.total_sold_range_low,
+                total_sold_range_high=evidence.profile.total_sold_range_high,
+                first_transaction_date=evidence.profile.first_transaction_date,
+                last_transaction_date=evidence.profile.last_transaction_date,
+            )
+            if evidence.profile is not None
+            else None
+        ),
+        committee_assignments=[
+            CommitteeAssignmentResponse(
+                politician_bioguide_id=a.politician_bioguide_id,
+                committee_thomas_id=a.committee_thomas_id,
+                committee_name=a.committee_name,
+                chamber=a.chamber.value,
+                jurisdiction_text=a.jurisdiction_text,
+                synced_at=a.synced_at,
+            )
+            for a in evidence.committee_assignments
+        ],
+        anomalies=[
+            AnomalyFeatureResponse(
+                feature_name=a.feature_name,
+                value=a.value,
+                baseline_description=a.baseline_description,
+                is_notable=a.is_notable,
+            )
+            for a in evidence.anomalies
+        ],
+        generated_at=evidence.generated_at,
+    )
+
+
+@router.post("/politicians/ingest", response_model=list[PoliticianTransactionResponse])
+async def ingest_politician_transactions(
+    start_date: str,
+    limit: int = 50,
+    research: ResearchService = Depends(get_research_service),
+    session: AsyncSession = Depends(get_db_session),
+) -> list[PoliticianTransactionResponse]:
+    transactions = await research.ingest_ptr_transactions(start_date=start_date, limit=limit)
+    await research.save_politician_transactions(transactions)
+    bioguide_ids = {t.politician_bioguide_id for t in transactions if t.politician_bioguide_id}
+    for bioguide_id in bioguide_ids:
+        await research.sync_committee_assignments(bioguide_id)
+    await session.commit()
+    return [_to_politician_transaction_response(t) for t in transactions]
+
+
+@router.get(
+    "/politicians/{politician_bioguide_id}/evidence", response_model=PoliticianEvidenceResponse
+)
+async def get_politician_evidence(
+    politician_bioguide_id: str,
+    research: ResearchService = Depends(get_research_service),
+) -> PoliticianEvidenceResponse:
+    evidence = await research.get_politician_evidence(politician_bioguide_id)
+    return _to_politician_evidence_response(evidence)

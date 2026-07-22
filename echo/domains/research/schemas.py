@@ -300,3 +300,133 @@ class InsiderEvidenceView(BaseModel):
     profile: InsiderProfile | None
     anomalies: list[AnomalyFeature]
     generated_at: datetime
+
+
+class Chamber(str, Enum):
+    """A real politician's own `terms` history (unitedstates/congress-
+    legislators) can include both — someone can move from the House to the
+    Senate — so both values are real modeling needs even though PROMPT.md
+    Phase 19's ingestion pipeline currently only populates `SENATE` (the
+    House Clerk's own disclosure system publishes PTRs as scanned PDFs, not
+    structured data — a documented scope limitation, not a silent gap;
+    Docs/DECISION_LOG.md's Phase 19 entry)."""
+
+    SENATE = "senate"
+    HOUSE = "house"
+
+
+class PoliticianTransactionType(str, Enum):
+    """The Senate eFD system's own real "Type" column values, confirmed
+    live before this enum was written."""
+
+    PURCHASE = "purchase"
+    SALE_FULL = "sale_full"
+    SALE_PARTIAL = "sale_partial"
+    EXCHANGE = "exchange"
+    OTHER = "other"  # any other real value — never guessed
+
+
+class PoliticianOwner(str, Enum):
+    """The Senate eFD system's own real "Owner" column values."""
+
+    SELF = "self"
+    SPOUSE = "spouse"
+    JOINT = "joint"
+    DEPENDENT_CHILD = "dependent_child"
+    OTHER = "other"
+
+
+class PoliticianTransaction(BaseModel):
+    """One transaction line from one electronically-filed Senate Periodic
+    Transaction Report (PROMPT.md Phase 19 implement items 1, 4, 5, 6).
+    `range_low`/`range_high` are the disclosed bracket's own boundaries,
+    never collapsed into a single fabricated dollar figure (verification 1)
+    — `range_high` is `None` for an open-ended "Over $X" disclosure, a
+    genuinely unbounded real value, not a missing one.
+    `politician_bioguide_id`/`state`/`party` are `None` when
+    `domains/research/policies.py`'s `resolve_politician_identity` could not
+    confidently match the filer's real (and often messily formatted) eFD
+    name against the congress-legislators reference dataset — "missing
+    stays missing" (Docs/DATA_MODEL.md) rather than a guessed identity.
+    `filing_delay_days` is computed from the filing's own real submission
+    date and the transaction's own real date (verification-adjacent to
+    implement item 6: "filing delay"), compared against the STOCK Act's own
+    45-day statutory deadline in `domains/research/policies.py`'s
+    `is_filing_late`."""
+
+    transaction_id: str = Field(default_factory=lambda: new_id("politiciantxn"))
+    politician_bioguide_id: str | None = None
+    politician_name: str
+    chamber: Chamber
+    state: str | None = None
+    party: str | None = None
+    report_id: str
+    filed_at: datetime
+    transaction_date: datetime
+    owner: PoliticianOwner
+    ticker: str | None = None
+    asset_name: str
+    asset_type: str
+    transaction_type: PoliticianTransactionType
+    range_low: float
+    range_high: float | None
+    filing_delay_days: int
+    comment: str | None = None
+    source_record_id: str
+    synced_at: datetime
+
+
+class CommitteeAssignment(BaseModel):
+    """One (politician, committee) membership from the congress-legislators
+    project's own *current* snapshot (PROMPT.md Phase 19 implement item 3)
+    — see this module's own `Chamber` docstring and
+    `providers/research/congress_legislators/adapter.py`'s module docstring
+    for why this is a snapshot, not a date-ranged history, and how that
+    honestly limits what `compute_committee_relationship_feature` may claim
+    (verification 2)."""
+
+    politician_bioguide_id: str
+    committee_thomas_id: str
+    committee_name: str
+    chamber: Chamber
+    jurisdiction_text: str | None = None
+    source_record_id: str
+    synced_at: datetime
+
+
+class PoliticianTradeProfile(BaseModel):
+    """PROMPT.md Phase 19 implement item 8: "historical trade profiles." A
+    computed aggregate, not a persisted table — same computed-not-stored
+    pattern as `InsiderProfile`. `total_purchased_range_low`/`_high` and
+    `total_sold_range_low`/`_high` sum each transaction's own disclosed
+    bracket boundaries independently — a genuine range, never a single
+    number pretending to be an exact total (verification 1 applied to the
+    aggregate, not just the individual transaction)."""
+
+    politician_bioguide_id: str
+    politician_name: str
+    transaction_count: int
+    total_purchased_range_low: float
+    total_purchased_range_high: float | None
+    total_sold_range_low: float
+    total_sold_range_high: float | None
+    first_transaction_date: datetime
+    last_transaction_date: datetime
+
+
+class PoliticianEvidenceView(BaseModel):
+    """PROMPT.md Phase 19 implement item 9-10: "committee relationship
+    features" and "evidence based anomaly candidates" — mirrors
+    `InsiderEvidenceView`: every transaction, the computed profile, the
+    politician's current committee assignments, and every anomaly feature
+    with its baseline, bundled together (verification 4: "every
+    relationship can be inspected" — the committee name, its real
+    jurisdiction text, and the matched term are all present here, not
+    reduced to a bare score)."""
+
+    politician_bioguide_id: str
+    transactions: list[PoliticianTransaction]
+    profile: PoliticianTradeProfile | None
+    committee_assignments: list[CommitteeAssignment]
+    anomalies: list[AnomalyFeature]
+    generated_at: datetime

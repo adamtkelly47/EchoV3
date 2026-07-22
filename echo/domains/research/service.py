@@ -15,7 +15,7 @@ adapters back a given provider name never changes this Protocol's shape.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 from core.identifiers import new_id
@@ -26,20 +26,29 @@ from domains.research.errors import (
     IssuerNotFoundError,
     NoDigestAvailableError,
     NoProviderDataAvailableError,
+    PoliticianNotFoundError,
 )
 from domains.research.policies import (
+    build_committee_assignments,
+    compute_bracket_size_anomaly,
+    compute_committee_relationship_features,
     compute_insider_cluster_feature,
     compute_insider_profile,
+    compute_politician_cluster_feature,
+    compute_politician_trade_profile,
     compute_size_anomaly,
     is_issuer_stale,
     parse_finnhub_issuer_claim,
     parse_finnhub_news_articles,
     parse_form4_transactions,
+    parse_ptr_transactions,
     parse_sec_edgar_issuer_claim,
     resolve_issuer_fields,
+    resolve_politician_identity,
 )
 from domains.research.repository import ResearchRepository
 from domains.research.schemas import (
+    CommitteeAssignment,
     EvidencePackage,
     InsiderEvidenceView,
     InsiderTransaction,
@@ -47,6 +56,8 @@ from domains.research.schemas import (
     NewsArticle,
     NewsDigest,
     NewsFeedback,
+    PoliticianEvidenceView,
+    PoliticianTransaction,
     ProviderClaim,
     SecurityMasterEntry,
 )
@@ -69,6 +80,19 @@ class Form4ProviderPort(Protocol):
     async def get_form4_document(self, cik: str, accession_number: str) -> dict[str, Any]: ...
 
 
+class PtrProviderPort(Protocol):
+    async def list_ptr_filings(
+        self, *, start_date: str, limit: int = 50
+    ) -> list[dict[str, Any]]: ...
+    async def get_ptr_transactions(self, report_id: str) -> dict[str, Any]: ...
+
+
+class LegislatorReferencePort(Protocol):
+    async def get_legislators(self) -> list[dict[str, Any]]: ...
+    async def get_committees(self) -> list[dict[str, Any]]: ...
+    async def get_committee_membership(self) -> dict[str, Any]: ...
+
+
 class ResearchService:
     def __init__(
         self,
@@ -79,6 +103,8 @@ class ResearchService:
         clock: Clock,
         news_providers: dict[str, NewsProviderPort] | None = None,
         form4_providers: dict[str, Form4ProviderPort] | None = None,
+        ptr_providers: dict[str, PtrProviderPort] | None = None,
+        legislator_reference_provider: LegislatorReferencePort | None = None,
     ) -> None:
         self._research = research
         self._source_records = source_records
@@ -87,6 +113,8 @@ class ResearchService:
         self._clock = clock
         self._news_providers = news_providers or {}
         self._form4_providers = form4_providers or {}
+        self._ptr_providers = ptr_providers or {}
+        self._legislator_reference_provider = legislator_reference_provider
 
     async def sync_issuer(self, ticker: str) -> Issuer:
         """PROMPT.md Phase 16 implement items 3-8 in one pipeline: ingest
@@ -395,6 +423,165 @@ class ResearchService:
             insider_cik=insider_cik,
             transactions=insider_transactions,
             profile=profile,
+            anomalies=anomalies,
+            generated_at=self._clock.now_utc(),
+        )
+
+    async def ingest_ptr_transactions(
+        self, *, start_date: str, limit: int = 50
+    ) -> list[PoliticianTransaction]:
+        """PROMPT.md Phase 19 implement items 1-6 in one pipeline: list
+        Senate PTR filings submitted on/after `start_date`, resolve each
+        filer's real identity against the congress-legislators reference
+        dataset, fetch and parse each electronically-filed report's own
+        transaction table, and normalize into typed transactions. Paper
+        filings (`report_kind != "ptr"`) are skipped — they have no
+        structured table to parse (a documented scope limitation,
+        `domains/research/schemas.py`'s own `Chamber` docstring). Pure
+        ingestion only — no anomaly features or committee relationships
+        (those need the *full* history and a resolved sector, assembled at
+        read time by `get_politician_evidence`). One filing failing to
+        fetch/parse doesn't block the rest."""
+        now = self._clock.now_utc()
+        legislators: list[dict[str, Any]] = []
+        if self._legislator_reference_provider is not None:
+            try:
+                legislators = await self._legislator_reference_provider.get_legislators()
+            except Exception:  # noqa: BLE001
+                legislators = []  # identity resolution degrades to "unresolved", not a hard failure
+
+        transactions: list[PoliticianTransaction] = []
+        for provider_name, provider in self._ptr_providers.items():
+            try:
+                filings = await provider.list_ptr_filings(start_date=start_date, limit=limit)
+            except Exception:  # noqa: BLE001
+                continue  # nosec B112 — intentional: skip this provider, not the whole ingest
+            for filing in filings:
+                if filing.get("report_kind") != "ptr":
+                    continue  # paper filings have no structured table to parse
+                report_id = filing["report_id"]
+                try:
+                    raw = await provider.get_ptr_transactions(report_id)
+                except Exception:  # noqa: BLE001
+                    continue  # nosec B112 — one filing failing doesn't block the rest
+                source_record_id = await self._store_raw_response(
+                    raw, provider=provider_name, now=now, origin=f"{provider_name}-ptr-{report_id}"
+                )
+                identity = resolve_politician_identity(
+                    first_name=filing.get("first_name", ""),
+                    last_name=filing.get("last_name", ""),
+                    reference_date=now,
+                    legislators=legislators,
+                )
+                politician_name = (
+                    f"{filing.get('first_name', '')} {filing.get('last_name', '')}".strip()
+                )
+                filed_at = datetime.strptime(filing["filed_at"], "%m/%d/%Y").replace(tzinfo=UTC)
+                transactions.extend(
+                    parse_ptr_transactions(
+                        raw,
+                        report_id=report_id,
+                        politician_name=politician_name,
+                        politician_bioguide_id=identity["bioguide_id"],
+                        state=identity["state"],
+                        party=identity["party"],
+                        filed_at=filed_at,
+                        source_record_id=source_record_id,
+                        now=now,
+                    )
+                )
+        return transactions
+
+    async def save_politician_transactions(self, transactions: list[PoliticianTransaction]) -> None:
+        await self._research.save_politician_transactions(transactions)
+
+    async def list_politician_transactions_for_politician(
+        self, politician_bioguide_id: str
+    ) -> list[PoliticianTransaction]:
+        return await self._research.list_politician_transactions_for_politician(
+            politician_bioguide_id
+        )
+
+    async def sync_committee_assignments(
+        self, politician_bioguide_id: str
+    ) -> list[CommitteeAssignment]:
+        """PROMPT.md Phase 19 implement item 3: "committee assignment
+        history." A separate, explicit sync — not folded into
+        `ingest_ptr_transactions` — since committee assignments are
+        relevant regardless of whether a politician has any PTR
+        transactions ingested yet, and re-fetching this reference dataset
+        on every PTR ingest run would be wasteful."""
+        if self._legislator_reference_provider is None:
+            return []
+        now = self._clock.now_utc()
+        try:
+            committees = await self._legislator_reference_provider.get_committees()
+            membership = await self._legislator_reference_provider.get_committee_membership()
+        except Exception:  # noqa: BLE001
+            return []  # no reference data available this run, not a hard failure
+        source_record_id = await self._store_raw_response(
+            {"committees": committees, "membership": membership},
+            provider="congress_legislators",
+            now=now,
+            origin="congress_legislators-committee-membership",
+        )
+        committees_by_thomas_id = {c["thomas_id"]: c for c in committees if c.get("thomas_id")}
+        assignments = build_committee_assignments(
+            politician_bioguide_id, membership, committees_by_thomas_id, source_record_id, now
+        )
+        await self._research.save_committee_assignments(assignments)
+        return assignments
+
+    async def get_politician_evidence(self, politician_bioguide_id: str) -> PoliticianEvidenceView:
+        """PROMPT.md Phase 19 implement items 8-10: "historical trade
+        profiles," "committee relationship features," "evidence based
+        anomaly candidates." Never re-ingests — reads only what's already
+        been ingested/synced, the same read/write split as
+        `get_insider_evidence`. Sector classification (implement item 7)
+        reuses this same domain's own `sync_issuer`/`get_issuer_by_ticker`
+        (Phase 16) rather than a new provider — a read never triggers a
+        live external sync as a side effect; an unresolved ticker simply
+        means no committee-relationship feature is computed for it (missing
+        stays missing), not a forced sync."""
+        transactions = await self._research.list_politician_transactions_for_politician(
+            politician_bioguide_id
+        )
+        if not transactions:
+            raise PoliticianNotFoundError(
+                "no ingested PTR transactions for politician_bioguide_id "
+                f"{politician_bioguide_id!r}"
+            )
+        politician_name = transactions[0].politician_name
+        profile = compute_politician_trade_profile(
+            politician_bioguide_id, politician_name, transactions
+        )
+        committee_assignments = await self._research.list_committee_assignments_for_politician(
+            politician_bioguide_id
+        )
+        latest = max(transactions, key=lambda t: t.transaction_date)
+        anomalies = []
+        bracket_anomaly = compute_bracket_size_anomaly(latest, transactions)
+        if bracket_anomaly is not None:
+            anomalies.append(bracket_anomaly)
+        if latest.ticker:
+            ticker_transactions = await self._research.list_politician_transactions_for_ticker(
+                latest.ticker
+            )
+            cluster_anomaly = compute_politician_cluster_feature(latest, ticker_transactions)
+            if cluster_anomaly is not None:
+                anomalies.append(cluster_anomaly)
+            issuer = await self.get_issuer_by_ticker(latest.ticker)
+            if issuer is not None and issuer.industry:
+                anomalies.extend(
+                    compute_committee_relationship_features(
+                        latest, committee_assignments, issuer.industry
+                    )
+                )
+        return PoliticianEvidenceView(
+            politician_bioguide_id=politician_bioguide_id,
+            transactions=transactions,
+            profile=profile,
+            committee_assignments=committee_assignments,
             anomalies=anomalies,
             generated_at=self._clock.now_utc(),
         )
