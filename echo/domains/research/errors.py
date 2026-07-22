@@ -18,3 +18,15 @@ class NoProviderDataAvailableError(EchoError):
     retryable = True
     severity = Severity.LOW
     http_status = 502
+
+
+class NoDigestAvailableError(EchoError):
+    """PROMPT.md Phase 17: a digest requires a completed news-intelligence
+    run (application/orchestrators/news_intelligence.py) — there is
+    deliberately no fallback to computing one on the fly from a read
+    endpoint, same discipline as Portfolio's dashboard/snapshot split."""
+
+    code = "no_digest_available"
+    retryable = False
+    severity = Severity.LOW
+    http_status = 404

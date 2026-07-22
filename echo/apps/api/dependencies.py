@@ -20,8 +20,9 @@ from application.model_gateway_factory import ModelGatewayPort, build_model_gate
 from application.orchestrators.calendar_writes import CalendarWriteOrchestrator
 from application.orchestrators.conversation import ConversationOrchestrator
 from application.orchestrators.memory_extraction import MemoryExtractionOrchestrator
+from application.orchestrators.news_intelligence import NewsIntelligenceOrchestrator
 from application.portfolio_provider_factory import build_schwab_provider
-from application.research_provider_factory import build_research_providers
+from application.research_provider_factory import build_news_providers, build_research_providers
 from core.config import get_settings
 from core.time import SystemClock
 from domains.approvals.repository import (
@@ -47,7 +48,7 @@ from domains.portfolio.repository import (
 )
 from domains.portfolio.service import PortfolioProviderPort, PortfolioService
 from domains.research.repository import PostgresResearchRepository
-from domains.research.service import ResearchProviderPort, ResearchService
+from domains.research.service import NewsProviderPort, ResearchProviderPort, ResearchService
 from infrastructure.database.engine import session_scope
 from infrastructure.database.repositories.audit import PostgresAuditRepository
 from infrastructure.database.repositories.observability import PostgresToolCallRepository
@@ -71,6 +72,11 @@ def get_schwab_provider() -> PortfolioProviderPort:
 @lru_cache
 def get_research_providers() -> dict[str, ResearchProviderPort]:
     return build_research_providers(get_settings())
+
+
+@lru_cache
+def get_news_providers() -> dict[str, NewsProviderPort]:
+    return build_news_providers(get_settings())
 
 
 @lru_cache
@@ -203,4 +209,13 @@ def get_research_service(
         get_research_providers(),
         PostgresAuditRepository(session),
         SystemClock(),
+        get_news_providers(),
     )
+
+
+def get_news_intelligence_orchestrator(
+    research: ResearchService = Depends(get_research_service),
+    portfolio: PortfolioService = Depends(get_portfolio_service),
+    gateway: ModelGatewayPort = Depends(get_model_gateway),
+) -> NewsIntelligenceOrchestrator:
+    return NewsIntelligenceOrchestrator(research, portfolio, gateway, SystemClock())

@@ -10,10 +10,30 @@ said, so a disagreement between providers is never silently discarded
 from __future__ import annotations
 
 from datetime import datetime
+from enum import Enum
 
 from pydantic import BaseModel, Field
 
 from core.identifiers import new_id
+
+
+class EventType(str, Enum):
+    """PROMPT.md Phase 17 implement item 5: "event type classification
+    through Ollama." A fixed, closed vocabulary — the model picks exactly
+    one of these (`application/orchestrators/news_intelligence.py`'s
+    structured-output call), it never free-text generates a category, which
+    is what makes verification 5 ("the local model cannot silently invent
+    facts") true by construction here rather than by prompt instruction
+    alone."""
+
+    EARNINGS = "earnings"
+    MERGER_ACQUISITION = "merger_acquisition"
+    LEADERSHIP_CHANGE = "leadership_change"
+    REGULATORY = "regulatory"
+    GUIDANCE = "guidance"
+    PRODUCT = "product"
+    LITIGATION = "litigation"
+    OTHER = "other"
 
 
 class ProviderClaim(BaseModel):
@@ -102,3 +122,62 @@ class EvidencePackage(BaseModel):
     claims: list[ProviderClaim]
     is_stale: bool
     generated_at: datetime
+
+
+class NewsArticle(BaseModel):
+    """A single ingested article (PROMPT.md Phase 17 implement item 1).
+    `cluster_id` groups near-duplicate stories together
+    (`domains.research.policies.cluster_duplicates` — implement item 4);
+    a standalone article's own `article_id` is its `cluster_id`.
+    `event_type`/`summary`/`relevance_score` start `None` at ingestion and
+    are filled in by later pipeline stages (classification, summarization,
+    scoring) — `application/orchestrators/news_intelligence.py` owns that
+    sequencing since it needs the Model Gateway, which domains/ never
+    imports (CONSTITUTION.md dependency direction)."""
+
+    article_id: str = Field(default_factory=lambda: new_id("article"))
+    issuer_id: str
+    headline: str
+    # The provider's own short description, when it supplies one — real
+    # input text for the Ollama summarization step (`summary` below),
+    # distinct from it: this is what the provider said, `summary` is what
+    # the local model said about it.
+    blurb: str | None = None
+    source: str
+    url: str
+    published_at: datetime
+    source_record_id: str
+    cluster_id: str
+    is_cluster_primary: bool = True
+    event_type: EventType | None = None
+    summary: str | None = None
+    relevance_score: float | None = None
+    synced_at: datetime
+
+
+class NewsDigest(BaseModel):
+    """PROMPT.md Phase 17's stated objective: "surface a small amount of
+    materially relevant news." The final, small, ranked set of articles
+    plus Claude's synthesized narrative (implement item 9) — `narrative`
+    must cite back into `article_ids` (verification 4: "the final narrative
+    links back to evidence"), checked live, not just instructed in the
+    prompt (Docs/DECISION_LOG.md's Phase 17 entry)."""
+
+    digest_id: str = Field(default_factory=lambda: new_id("digest"))
+    issuer_id: str
+    article_ids: list[str]
+    narrative: str
+    generated_at: datetime
+
+
+class NewsFeedback(BaseModel):
+    """PROMPT.md Phase 17 implement item 10: "user feedback signals."
+    Recorded but not yet consumed by relevance scoring — closing this loop
+    is future work, noted honestly rather than claimed done
+    (Docs/DECISION_LOG.md's Phase 17 entry)."""
+
+    feedback_id: str = Field(default_factory=lambda: new_id("newsfeedback"))
+    article_id: str
+    user_id: str
+    useful: bool
+    created_at: datetime

@@ -15,27 +15,46 @@ adapters back a given provider name never changes this Protocol's shape.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Protocol
 
 from core.identifiers import new_id
 from core.provenance import SourceRecord, ValidationStatus
 from core.time import Clock
-from domains.research.errors import IssuerNotFoundError, NoProviderDataAvailableError
+from domains.research.errors import (
+    IssuerNotFoundError,
+    NoDigestAvailableError,
+    NoProviderDataAvailableError,
+)
 from domains.research.policies import (
     is_issuer_stale,
     parse_finnhub_issuer_claim,
+    parse_finnhub_news_articles,
     parse_sec_edgar_issuer_claim,
     resolve_issuer_fields,
 )
 from domains.research.repository import ResearchRepository
-from domains.research.schemas import EvidencePackage, Issuer, ProviderClaim, SecurityMasterEntry
+from domains.research.schemas import (
+    EvidencePackage,
+    Issuer,
+    NewsArticle,
+    NewsDigest,
+    NewsFeedback,
+    ProviderClaim,
+    SecurityMasterEntry,
+)
 from infrastructure.database.repositories.audit import AuditRepository
 from infrastructure.database.repositories.provenance import SourceRecordRepository
 
 
 class ResearchProviderPort(Protocol):
     async def get_issuer_profile(self, ticker: str) -> dict[str, Any]: ...
+
+
+class NewsProviderPort(Protocol):
+    async def get_company_news(
+        self, ticker: str, *, from_date: str, to_date: str
+    ) -> list[dict[str, Any]]: ...
 
 
 class ResearchService:
@@ -46,12 +65,14 @@ class ResearchService:
         providers: dict[str, ResearchProviderPort],
         audit: AuditRepository,
         clock: Clock,
+        news_providers: dict[str, NewsProviderPort] | None = None,
     ) -> None:
         self._research = research
         self._source_records = source_records
         self._providers = providers
         self._audit = audit
         self._clock = clock
+        self._news_providers = news_providers or {}
 
     async def sync_issuer(self, ticker: str) -> Issuer:
         """PROMPT.md Phase 16 implement items 3-8 in one pipeline: ingest
@@ -76,7 +97,9 @@ class ResearchService:
                 warnings.append(f"{provider_name} failed: {exc}")
                 continue
 
-            source_record_id = await self._store_raw_response(raw, provider=provider_name, now=now)
+            source_record_id = await self._store_raw_response(
+                raw, provider=provider_name, now=now, origin=f"{provider_name}-issuer-profile"
+            )
             if provider_name == "finnhub":
                 parsed = parse_finnhub_issuer_claim(raw)
             elif provider_name == "sec_edgar":
@@ -191,7 +214,7 @@ class ResearchService:
         return new_id("issuer")
 
     async def _store_raw_response(
-        self, raw: dict[str, Any], *, provider: str, now: datetime
+        self, raw: dict[str, Any], *, provider: str, now: datetime, origin: str
     ) -> str:
         raw_response_id = new_id("researchraw")
         await self._research.save_raw_response(raw_response_id, raw, now)
@@ -199,10 +222,81 @@ class ResearchService:
             source_type="research-api",
             provider=provider,
             retrieved_at=now,
-            origin=f"{provider}-issuer-profile",
+            origin=origin,
             raw_storage_ref=raw_response_id,
             parser_version="1",
             validation_status=ValidationStatus.PASSED,
         )
         await self._source_records.save(record)
         return record.record_id
+
+    async def ingest_news(
+        self, issuer_id: str, ticker: str, *, days_back: int = 7
+    ) -> list[NewsArticle]:
+        """PROMPT.md Phase 17 implement item 1: "news ingestion." Pure
+        ingestion only — no clustering, classification, scoring, or
+        synthesis, all of which need the Model Gateway
+        (application/orchestrators/news_intelligence.py owns that, since
+        domains/ never imports it — CONSTITUTION.md dependency direction).
+        Returns the newly-parsed articles; the caller is responsible for
+        persisting them via `save_articles` once later stages have enriched
+        them, so a partially-enriched article is never written."""
+        now = self._clock.now_utc()
+        from_date = (now - timedelta(days=days_back)).strftime("%Y-%m-%d")
+        to_date = now.strftime("%Y-%m-%d")
+        articles: list[NewsArticle] = []
+        for provider_name, provider in self._news_providers.items():
+            try:
+                raw = await provider.get_company_news(ticker, from_date=from_date, to_date=to_date)
+            except Exception:  # noqa: BLE001
+                # Intentional: skip this provider, don't fail the whole sync.
+                continue  # nosec B112
+            source_record_id = await self._store_raw_response(
+                {"articles": raw},
+                provider=provider_name,
+                now=now,
+                origin=f"{provider_name}-company-news",
+            )
+            if provider_name == "finnhub":
+                articles.extend(
+                    parse_finnhub_news_articles(
+                        raw, issuer_id=issuer_id, source_record_id=source_record_id, synced_at=now
+                    )
+                )
+        return articles
+
+    async def save_articles(self, articles: list[NewsArticle]) -> None:
+        await self._research.save_articles(articles)
+
+    async def list_articles_for_issuer(self, issuer_id: str) -> list[NewsArticle]:
+        return await self._research.list_articles_for_issuer(issuer_id)
+
+    async def save_digest(self, digest: NewsDigest) -> NewsDigest:
+        return await self._research.save_digest(digest)
+
+    async def get_latest_digest(self, issuer_id: str) -> NewsDigest:
+        """Never re-runs the pipeline — reads only what
+        application/orchestrators/news_intelligence.py already produced,
+        the same read/write split as `get_evidence_package`."""
+        digest = await self._research.get_latest_digest(issuer_id)
+        if digest is None:
+            raise NoDigestAvailableError(f"no news digest available for issuer_id {issuer_id!r}")
+        return digest
+
+    async def record_feedback(self, article_id: str, user_id: str, useful: bool) -> NewsFeedback:
+        """PROMPT.md Phase 17 implement item 10: "user feedback signals."
+        Recorded, not yet consumed by relevance scoring — closing that loop
+        is future work (Docs/DECISION_LOG.md's Phase 17 entry)."""
+        feedback = NewsFeedback(
+            article_id=article_id,
+            user_id=user_id,
+            useful=useful,
+            created_at=self._clock.now_utc(),
+        )
+        await self._research.save_feedback(feedback)
+        await self._audit.record(
+            action="research.news_feedback_recorded",
+            result="success",
+            detail={"article_id": article_id, "user_id": user_id, "useful": useful},
+        )
+        return feedback

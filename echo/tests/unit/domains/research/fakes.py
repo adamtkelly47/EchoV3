@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from domains.research.schemas import Issuer, ProviderClaim, SecurityMasterEntry
+from domains.research.schemas import (
+    Issuer,
+    NewsArticle,
+    NewsDigest,
+    NewsFeedback,
+    ProviderClaim,
+    SecurityMasterEntry,
+)
 
 
 class FakeResearchRepository:
@@ -11,6 +18,9 @@ class FakeResearchRepository:
         self.securities: dict[tuple[str, str], SecurityMasterEntry] = {}
         self.claims: list[ProviderClaim] = []
         self.raw_responses: dict[str, dict[str, Any]] = {}
+        self.articles: dict[str, NewsArticle] = {}
+        self.digests: list[NewsDigest] = []
+        self.feedback: list[NewsFeedback] = []
 
     async def save_issuer(self, issuer: Issuer) -> Issuer:
         self.issuers[issuer.issuer_id] = issuer
@@ -54,10 +64,32 @@ class FakeResearchRepository:
     ) -> None:
         self.raw_responses[raw_response_id] = payload
 
+    async def save_articles(self, articles: list[NewsArticle]) -> None:
+        for article in articles:
+            self.articles[article.article_id] = article
+
+    async def list_articles_for_issuer(self, issuer_id: str) -> list[NewsArticle]:
+        return [a for a in self.articles.values() if a.issuer_id == issuer_id]
+
+    async def save_digest(self, digest: NewsDigest) -> NewsDigest:
+        self.digests.append(digest)
+        return digest
+
+    async def get_latest_digest(self, issuer_id: str) -> NewsDigest | None:
+        matches = [d for d in self.digests if d.issuer_id == issuer_id]
+        return matches[-1] if matches else None
+
+    async def save_feedback(self, feedback: NewsFeedback) -> None:
+        self.feedback.append(feedback)
+
+    async def list_feedback_for_article(self, article_id: str) -> list[NewsFeedback]:
+        return [f for f in self.feedback if f.article_id == article_id]
+
 
 class FakeFinnhubProvider:
     def __init__(self) -> None:
         self.response: dict[str, Any] = {}
+        self.news_response: list[dict[str, Any]] = []
         self.raise_error: Exception | None = None
         self.calls: list[str] = []
 
@@ -66,6 +98,14 @@ class FakeFinnhubProvider:
         if self.raise_error:
             raise self.raise_error
         return self.response
+
+    async def get_company_news(
+        self, ticker: str, *, from_date: str, to_date: str
+    ) -> list[dict[str, Any]]:
+        self.calls.append(ticker)
+        if self.raise_error:
+            raise self.raise_error
+        return self.news_response
 
 
 class FakeSecEdgarProvider:

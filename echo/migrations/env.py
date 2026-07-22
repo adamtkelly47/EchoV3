@@ -39,6 +39,9 @@ from domains.portfolio.repository import (  # noqa: F401 — registers tables on
 )
 from domains.research.repository import (  # noqa: F401 — registers tables on Base.metadata
     IssuerRow,
+    NewsArticleRow,
+    NewsDigestRow,
+    NewsFeedbackRow,
     ProviderClaimRow,
     ResearchRawResponseRow,
     SecurityMasterEntryRow,

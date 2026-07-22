@@ -56,3 +56,40 @@ class EvidencePackageResponse(BaseModel):
     claims: list[ProviderClaimResponse]
     is_stale: bool
     generated_at: datetime
+
+
+class NewsArticleResponse(BaseModel):
+    article_id: str
+    issuer_id: str
+    headline: str
+    blurb: str | None
+    source: str
+    url: str
+    published_at: datetime
+    cluster_id: str
+    is_cluster_primary: bool
+    event_type: str | None
+    summary: str | None
+    relevance_score: float | None
+    synced_at: datetime
+
+
+class NewsDigestResponse(BaseModel):
+    digest_id: str
+    issuer_id: str
+    articles: list[NewsArticleResponse]
+    narrative: str
+    generated_at: datetime
+
+
+class FeedbackRequest(BaseModel):
+    user_id: str
+    useful: bool
+
+
+class FeedbackResponse(BaseModel):
+    feedback_id: str
+    article_id: str
+    user_id: str
+    useful: bool
+    created_at: datetime

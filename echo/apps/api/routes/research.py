@@ -9,18 +9,58 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from apps.api.dependencies import get_db_session, get_research_service
+from application.orchestrators.news_intelligence import NewsIntelligenceOrchestrator
+from apps.api.dependencies import (
+    get_db_session,
+    get_news_intelligence_orchestrator,
+    get_research_service,
+)
 from apps.api.schemas.research import (
     EvidencePackageResponse,
+    FeedbackRequest,
+    FeedbackResponse,
     FieldConflictResponse,
     IssuerResponse,
+    NewsArticleResponse,
+    NewsDigestResponse,
     ProviderClaimResponse,
     SecurityResponse,
 )
-from domains.research.schemas import EvidencePackage, Issuer
+from domains.research.schemas import EvidencePackage, Issuer, NewsArticle, NewsDigest
 from domains.research.service import ResearchService
 
 router = APIRouter(prefix="/research", tags=["research"])
+
+
+def _to_article_response(article: NewsArticle) -> NewsArticleResponse:
+    return NewsArticleResponse(
+        article_id=article.article_id,
+        issuer_id=article.issuer_id,
+        headline=article.headline,
+        blurb=article.blurb,
+        source=article.source,
+        url=article.url,
+        published_at=article.published_at,
+        cluster_id=article.cluster_id,
+        is_cluster_primary=article.is_cluster_primary,
+        event_type=article.event_type.value if article.event_type else None,
+        summary=article.summary,
+        relevance_score=article.relevance_score,
+        synced_at=article.synced_at,
+    )
+
+
+async def _to_digest_response(digest: NewsDigest, research: ResearchService) -> NewsDigestResponse:
+    all_articles = await research.list_articles_for_issuer(digest.issuer_id)
+    by_id = {a.article_id: a for a in all_articles}
+    ordered = [by_id[aid] for aid in digest.article_ids if aid in by_id]
+    return NewsDigestResponse(
+        digest_id=digest.digest_id,
+        issuer_id=digest.issuer_id,
+        articles=[_to_article_response(a) for a in ordered],
+        narrative=digest.narrative,
+        generated_at=digest.generated_at,
+    )
 
 
 def _to_issuer_response(issuer: Issuer) -> IssuerResponse:
@@ -103,3 +143,52 @@ async def get_evidence_package(
 ) -> EvidencePackageResponse:
     package = await research.get_evidence_package(issuer_id)
     return _to_evidence_response(package)
+
+
+@router.post("/issuers/{issuer_id}/news/digest", response_model=NewsDigestResponse)
+async def run_news_digest(
+    issuer_id: str,
+    ticker: str,
+    company_name: str,
+    user_id: str,
+    news: NewsIntelligenceOrchestrator = Depends(get_news_intelligence_orchestrator),
+    research: ResearchService = Depends(get_research_service),
+    session: AsyncSession = Depends(get_db_session),
+) -> NewsDigestResponse:
+    digest = await news.run_digest(issuer_id, ticker.upper(), company_name, user_id)
+    await session.commit()
+    return await _to_digest_response(digest, research)
+
+
+@router.get("/issuers/{issuer_id}/news/digest", response_model=NewsDigestResponse)
+async def get_latest_news_digest(
+    issuer_id: str, research: ResearchService = Depends(get_research_service)
+) -> NewsDigestResponse:
+    digest = await research.get_latest_digest(issuer_id)
+    return await _to_digest_response(digest, research)
+
+
+@router.get("/issuers/{issuer_id}/news/articles", response_model=list[NewsArticleResponse])
+async def list_news_articles(
+    issuer_id: str, research: ResearchService = Depends(get_research_service)
+) -> list[NewsArticleResponse]:
+    articles = await research.list_articles_for_issuer(issuer_id)
+    return [_to_article_response(a) for a in articles]
+
+
+@router.post("/news/articles/{article_id}/feedback", response_model=FeedbackResponse)
+async def record_news_feedback(
+    article_id: str,
+    body: FeedbackRequest,
+    research: ResearchService = Depends(get_research_service),
+    session: AsyncSession = Depends(get_db_session),
+) -> FeedbackResponse:
+    feedback = await research.record_feedback(article_id, body.user_id, body.useful)
+    await session.commit()
+    return FeedbackResponse(
+        feedback_id=feedback.feedback_id,
+        article_id=feedback.article_id,
+        user_id=feedback.user_id,
+        useful=feedback.useful,
+        created_at=feedback.created_at,
+    )

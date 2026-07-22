@@ -4,7 +4,11 @@ import pytest
 
 from core.errors import ProviderUnavailableError
 from core.time import FakeClock
-from domains.research.errors import IssuerNotFoundError, NoProviderDataAvailableError
+from domains.research.errors import (
+    IssuerNotFoundError,
+    NoDigestAvailableError,
+    NoProviderDataAvailableError,
+)
 from domains.research.service import ResearchService
 from tests.unit.domains.research.fakes import (
     FakeAuditRepository,
@@ -28,6 +32,7 @@ def _service(
         {"finnhub": finnhub, "sec_edgar": sec_edgar},
         FakeAuditRepository(),
         clock,
+        {"finnhub": finnhub},
     )
     return service, repo, finnhub, sec_edgar
 
@@ -181,3 +186,84 @@ async def test_get_evidence_package_flags_stale_data() -> None:
 async def test_get_issuer_by_ticker_returns_none_when_never_synced() -> None:
     service, _, _, _ = _service()
     assert await service.get_issuer_by_ticker("AAPL") is None
+
+
+async def test_ingest_news_parses_articles_from_configured_news_providers() -> None:
+    service, _, finnhub, _ = _service()
+    finnhub.news_response = [
+        {
+            "headline": "Company beats earnings estimates",
+            "summary": "A short blurb.",
+            "source": "Reuters",
+            "url": "https://example.com/1",
+            "datetime": 1767225600,
+        }
+    ]
+
+    articles = await service.ingest_news("issuer_1", "AAPL")
+
+    assert len(articles) == 1
+    assert articles[0].issuer_id == "issuer_1"
+    assert articles[0].headline == "Company beats earnings estimates"
+
+
+async def test_ingest_news_one_provider_failing_returns_empty_not_a_crash() -> None:
+    service, _, finnhub, _ = _service()
+    finnhub.raise_error = ProviderUnavailableError("Finnhub is down")
+
+    articles = await service.ingest_news("issuer_1", "AAPL")
+
+    assert articles == []
+
+
+async def test_save_and_list_articles_for_issuer() -> None:
+    from domains.research.schemas import NewsArticle
+
+    service, _, _, _ = _service()
+    article = NewsArticle(
+        issuer_id="issuer_1",
+        headline="Headline",
+        source="Reuters",
+        url="https://example.com/1",
+        published_at=datetime(2026, 1, 1, tzinfo=UTC),
+        source_record_id="s1",
+        cluster_id="c1",
+        synced_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    await service.save_articles([article])
+
+    articles = await service.list_articles_for_issuer("issuer_1")
+    assert len(articles) == 1
+    assert articles[0].headline == "Headline"
+
+
+async def test_get_latest_digest_without_one_raises() -> None:
+    service, _, _, _ = _service()
+    with pytest.raises(NoDigestAvailableError):
+        await service.get_latest_digest("issuer_1")
+
+
+async def test_save_and_get_latest_digest() -> None:
+    from domains.research.schemas import NewsDigest
+
+    service, _, _, _ = _service()
+    digest = NewsDigest(
+        issuer_id="issuer_1",
+        article_ids=["article_1"],
+        narrative="A synthesized narrative [1].",
+        generated_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    await service.save_digest(digest)
+
+    latest = await service.get_latest_digest("issuer_1")
+    assert latest.narrative == "A synthesized narrative [1]."
+
+
+async def test_record_feedback_persists_and_audits() -> None:
+    service, repo, _, _ = _service()
+    feedback = await service.record_feedback("article_1", "live_user", True)
+
+    assert feedback.article_id == "article_1"
+    assert feedback.useful is True
+    stored = await repo.list_feedback_for_article("article_1")
+    assert len(stored) == 1

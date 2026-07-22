@@ -17,7 +17,7 @@ rather than registered with an adapter that would fail on first use.
 from __future__ import annotations
 
 from core.config import Settings
-from domains.research.service import ResearchProviderPort
+from domains.research.service import NewsProviderPort, ResearchProviderPort
 from providers.research.finnhub.adapter import FinnhubAdapter
 from providers.research.sec_edgar.adapter import SecEdgarAdapter
 
@@ -28,4 +28,20 @@ def build_research_providers(settings: Settings) -> dict[str, ResearchProviderPo
         providers["finnhub"] = FinnhubAdapter(settings.finnhub_api_key)
     if settings.research_contact_email:
         providers["sec_edgar"] = SecEdgarAdapter(settings.research_contact_email)
+    return providers
+
+
+def build_news_providers(settings: Settings) -> dict[str, NewsProviderPort]:
+    """PROMPT.md Phase 17. A separate dict/factory from
+    `build_research_providers` — SEC EDGAR has no news endpoint at all, so
+    forcing one shared Protocol across both needs would either give
+    `SecEdgarAdapter` a method it can never honestly implement, or force
+    `ResearchProviderPort` itself to grow a method most providers don't
+    support. `FinnhubAdapter` structurally satisfies both Protocols; a
+    second instance here (rather than sharing the one from
+    `build_research_providers`) is a stateless adapter holding only an API
+    key, so the duplication costs nothing."""
+    providers: dict[str, NewsProviderPort] = {}
+    if settings.finnhub_api_key:
+        providers["finnhub"] = FinnhubAdapter(settings.finnhub_api_key)
     return providers
