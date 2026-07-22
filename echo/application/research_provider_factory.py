@@ -17,7 +17,7 @@ rather than registered with an adapter that would fail on first use.
 from __future__ import annotations
 
 from core.config import Settings
-from domains.research.service import NewsProviderPort, ResearchProviderPort
+from domains.research.service import Form4ProviderPort, NewsProviderPort, ResearchProviderPort
 from providers.research.finnhub.adapter import FinnhubAdapter
 from providers.research.sec_edgar.adapter import SecEdgarAdapter
 
@@ -44,4 +44,18 @@ def build_news_providers(settings: Settings) -> dict[str, NewsProviderPort]:
     providers: dict[str, NewsProviderPort] = {}
     if settings.finnhub_api_key:
         providers["finnhub"] = FinnhubAdapter(settings.finnhub_api_key)
+    return providers
+
+
+def build_form4_providers(settings: Settings) -> dict[str, Form4ProviderPort]:
+    """PROMPT.md Phase 18. SEC EDGAR is the only provider with Form 4 data
+    — Finnhub has no filings endpoint — so this dict will only ever have
+    one entry in practice, but stays a dict (not a single adapter) for the
+    same reason `build_research_providers` does: nothing about the
+    `Form4ProviderPort` shape assumes there's exactly one implementation
+    forever (PROMPT.md Phase 16 verification 3: "provider replacement does
+    not alter domain interfaces")."""
+    providers: dict[str, Form4ProviderPort] = {}
+    if settings.research_contact_email:
+        providers["sec_edgar"] = SecEdgarAdapter(settings.research_contact_email)
     return providers

@@ -22,12 +22,15 @@ from sqlalchemy.orm import Mapped, mapped_column
 from domains.research.schemas import (
     EventType,
     FieldConflict,
+    FilingContext,
+    InsiderTransaction,
     Issuer,
     NewsArticle,
     NewsDigest,
     NewsFeedback,
     ProviderClaim,
     SecurityMasterEntry,
+    TransactionType,
 )
 from infrastructure.database.base import Base
 
@@ -118,6 +121,62 @@ class NewsFeedbackRow(Base):
     user_id: Mapped[str] = mapped_column(String, index=True)
     useful: Mapped[bool] = mapped_column(Boolean)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class InsiderTransactionRow(Base):
+    __tablename__ = "research_insider_transactions"
+
+    transaction_id: Mapped[str] = mapped_column(String, primary_key=True)
+    issuer_id: Mapped[str] = mapped_column(String, index=True)
+    insider_cik: Mapped[str] = mapped_column(String, index=True)
+    insider_name: Mapped[str] = mapped_column(String)
+    is_director: Mapped[bool] = mapped_column(Boolean)
+    is_officer: Mapped[bool] = mapped_column(Boolean)
+    is_ten_percent_owner: Mapped[bool] = mapped_column(Boolean)
+    officer_title: Mapped[str | None] = mapped_column(String)
+    transaction_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    transaction_code: Mapped[str] = mapped_column(String)
+    transaction_type: Mapped[str] = mapped_column(String)
+    shares: Mapped[float] = mapped_column(Float)
+    price_per_share: Mapped[float | None] = mapped_column(Float)
+    transaction_value: Mapped[float | None] = mapped_column(Float)
+    acquired_disposed: Mapped[str] = mapped_column(String)
+    shares_owned_after: Mapped[float | None] = mapped_column(Float)
+    ownership_change_percent: Mapped[float | None] = mapped_column(Float)
+    is_planned_sale: Mapped[bool] = mapped_column(Boolean, default=False)
+    footnote_text: Mapped[str | None] = mapped_column(String)
+    filing_context: Mapped[str | None] = mapped_column(String)
+    filing_accession_number: Mapped[str] = mapped_column(String)
+    source_record_id: Mapped[str] = mapped_column(String)
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+def _row_to_insider_transaction(row: InsiderTransactionRow) -> InsiderTransaction:
+    return InsiderTransaction(
+        transaction_id=row.transaction_id,
+        issuer_id=row.issuer_id,
+        insider_cik=row.insider_cik,
+        insider_name=row.insider_name,
+        is_director=row.is_director,
+        is_officer=row.is_officer,
+        is_ten_percent_owner=row.is_ten_percent_owner,
+        officer_title=row.officer_title,
+        transaction_date=row.transaction_date,
+        transaction_code=row.transaction_code,
+        transaction_type=TransactionType(row.transaction_type),
+        shares=row.shares,
+        price_per_share=row.price_per_share,
+        transaction_value=row.transaction_value,
+        acquired_disposed=row.acquired_disposed,
+        shares_owned_after=row.shares_owned_after,
+        ownership_change_percent=row.ownership_change_percent,
+        is_planned_sale=row.is_planned_sale,
+        footnote_text=row.footnote_text,
+        filing_context=FilingContext(row.filing_context) if row.filing_context else None,
+        filing_accession_number=row.filing_accession_number,
+        source_record_id=row.source_record_id,
+        synced_at=row.synced_at,
+    )
 
 
 def _row_to_article(row: NewsArticleRow) -> NewsArticle:
@@ -218,6 +277,13 @@ class ResearchRepository(Protocol):
     async def get_latest_digest(self, issuer_id: str) -> NewsDigest | None: ...
     async def save_feedback(self, feedback: NewsFeedback) -> None: ...
     async def list_feedback_for_article(self, article_id: str) -> list[NewsFeedback]: ...
+    async def save_insider_transactions(self, transactions: list[InsiderTransaction]) -> None: ...
+    async def list_insider_transactions_for_issuer(
+        self, issuer_id: str
+    ) -> list[InsiderTransaction]: ...
+    async def list_insider_transactions_for_insider(
+        self, issuer_id: str, insider_cik: str
+    ) -> list[InsiderTransaction]: ...
 
 
 class PostgresResearchRepository:
@@ -396,3 +462,57 @@ class PostgresResearchRepository:
             select(NewsFeedbackRow).where(NewsFeedbackRow.article_id == article_id)
         )
         return [_row_to_feedback(row) for row in result.scalars().all()]
+
+    async def save_insider_transactions(self, transactions: list[InsiderTransaction]) -> None:
+        """Upsert by `transaction_id` — a transaction is re-saved once
+        `filing_context` (Ollama's footnote classification) is filled in
+        after the initial deterministic ingest, the same enrich-in-place
+        pattern as `save_articles`."""
+        for txn in transactions:
+            row = await self._session.get(InsiderTransactionRow, txn.transaction_id)
+            if row is None:
+                row = InsiderTransactionRow(
+                    transaction_id=txn.transaction_id, issuer_id=txn.issuer_id
+                )
+                self._session.add(row)
+            row.insider_cik = txn.insider_cik
+            row.insider_name = txn.insider_name
+            row.is_director = txn.is_director
+            row.is_officer = txn.is_officer
+            row.is_ten_percent_owner = txn.is_ten_percent_owner
+            row.officer_title = txn.officer_title
+            row.transaction_date = txn.transaction_date
+            row.transaction_code = txn.transaction_code
+            row.transaction_type = txn.transaction_type.value
+            row.shares = txn.shares
+            row.price_per_share = txn.price_per_share
+            row.transaction_value = txn.transaction_value
+            row.acquired_disposed = txn.acquired_disposed
+            row.shares_owned_after = txn.shares_owned_after
+            row.ownership_change_percent = txn.ownership_change_percent
+            row.is_planned_sale = txn.is_planned_sale
+            row.footnote_text = txn.footnote_text
+            row.filing_context = txn.filing_context.value if txn.filing_context else None
+            row.filing_accession_number = txn.filing_accession_number
+            row.source_record_id = txn.source_record_id
+            row.synced_at = txn.synced_at
+        await self._session.flush()
+
+    async def list_insider_transactions_for_issuer(
+        self, issuer_id: str
+    ) -> list[InsiderTransaction]:
+        result = await self._session.execute(
+            select(InsiderTransactionRow).where(InsiderTransactionRow.issuer_id == issuer_id)
+        )
+        return [_row_to_insider_transaction(row) for row in result.scalars().all()]
+
+    async def list_insider_transactions_for_insider(
+        self, issuer_id: str, insider_cik: str
+    ) -> list[InsiderTransaction]:
+        result = await self._session.execute(
+            select(InsiderTransactionRow).where(
+                InsiderTransactionRow.issuer_id == issuer_id,
+                InsiderTransactionRow.insider_cik == insider_cik,
+            )
+        )
+        return [_row_to_insider_transaction(row) for row in result.scalars().all()]

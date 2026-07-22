@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from domains.research.schemas import (
+    InsiderTransaction,
     Issuer,
     NewsArticle,
     NewsDigest,
@@ -21,6 +22,7 @@ class FakeResearchRepository:
         self.articles: dict[str, NewsArticle] = {}
         self.digests: list[NewsDigest] = []
         self.feedback: list[NewsFeedback] = []
+        self.insider_transactions: dict[str, InsiderTransaction] = {}
 
     async def save_issuer(self, issuer: Issuer) -> Issuer:
         self.issuers[issuer.issuer_id] = issuer
@@ -85,6 +87,24 @@ class FakeResearchRepository:
     async def list_feedback_for_article(self, article_id: str) -> list[NewsFeedback]:
         return [f for f in self.feedback if f.article_id == article_id]
 
+    async def save_insider_transactions(self, transactions: list[InsiderTransaction]) -> None:
+        for transaction in transactions:
+            self.insider_transactions[transaction.transaction_id] = transaction
+
+    async def list_insider_transactions_for_issuer(
+        self, issuer_id: str
+    ) -> list[InsiderTransaction]:
+        return [t for t in self.insider_transactions.values() if t.issuer_id == issuer_id]
+
+    async def list_insider_transactions_for_insider(
+        self, issuer_id: str, insider_cik: str
+    ) -> list[InsiderTransaction]:
+        return [
+            t
+            for t in self.insider_transactions.values()
+            if t.issuer_id == issuer_id and t.insider_cik == insider_cik
+        ]
+
 
 class FakeFinnhubProvider:
     def __init__(self) -> None:
@@ -119,6 +139,26 @@ class FakeSecEdgarProvider:
         if self.raise_error:
             raise self.raise_error
         return self.response
+
+
+class FakeForm4Provider:
+    def __init__(self) -> None:
+        self.filings: list[dict[str, Any]] = []
+        self.documents_by_accession: dict[str, dict[str, Any]] = {}
+        self.raise_error: Exception | None = None
+        self.calls: list[str] = []
+
+    async def get_form4_filings(self, cik: str, *, limit: int = 20) -> list[dict[str, Any]]:
+        self.calls.append(cik)
+        if self.raise_error:
+            raise self.raise_error
+        return self.filings[:limit]
+
+    async def get_form4_document(self, cik: str, accession_number: str) -> dict[str, Any]:
+        self.calls.append(f"{cik}:{accession_number}")
+        if self.raise_error:
+            raise self.raise_error
+        return self.documents_by_accession[accession_number]
 
 
 class FakeSourceRecordRepository:

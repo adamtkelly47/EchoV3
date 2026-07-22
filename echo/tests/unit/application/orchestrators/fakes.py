@@ -140,3 +140,56 @@ class FakeNewsModelGateway:
     ) -> AsyncIterator[str]:
         raise NotImplementedError("not used by NewsIntelligenceOrchestrator")
         yield ""  # pragma: no cover — makes this an async generator for typing
+
+
+class FakeInsiderModelGateway:
+    """InsiderIntelligenceOrchestrator makes many `generate_structured`
+    calls classifying footnotes into `FilingContext`, plus one `generate`
+    call for the Claude interpretation — same dispatch-by-field-name
+    pattern as `FakeNewsModelGateway`."""
+
+    def __init__(
+        self,
+        *,
+        filing_context_decisions: list[str] | None = None,
+        interpretation_output: str = "A plain-language explanation.",
+        raise_on_generate: Exception | None = None,
+    ) -> None:
+        self._filing_context_queue = list(filing_context_decisions or [])
+        self.interpretation_output = interpretation_output
+        self.raise_on_generate = raise_on_generate
+        self.generate_calls: list[ModelRequest] = []
+        self.structured_calls: list[ModelRequest] = []
+
+    async def generate_structured(
+        self,
+        request: ModelRequest,
+        output_model: type[OutputT],
+        *,
+        provider: Provider | None = None,
+    ) -> OutputT:
+        self.structured_calls.append(request)
+        fields = output_model.model_fields
+        if "filing_context" in fields:
+            assert self._filing_context_queue, "no more configured filing_context_decisions"
+            return output_model(filing_context=self._filing_context_queue.pop(0))
+        raise NotImplementedError(f"unrecognized output_model fields: {list(fields)}")
+
+    async def generate(
+        self, request: ModelRequest, *, provider: Provider | None = None
+    ) -> ModelResponse:
+        self.generate_calls.append(request)
+        if self.raise_on_generate is not None:
+            raise self.raise_on_generate
+        return ModelResponse(
+            output=self.interpretation_output,
+            provider=provider or Provider.CLAUDE,
+            model_name="fake",
+            latency_ms=1.0,
+        )
+
+    async def generate_stream(
+        self, request: ModelRequest, *, provider: Provider | None = None
+    ) -> AsyncIterator[str]:
+        raise NotImplementedError("not used by InsiderIntelligenceOrchestrator")
+        yield ""  # pragma: no cover — makes this an async generator for typing

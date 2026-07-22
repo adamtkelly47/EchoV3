@@ -30,3 +30,15 @@ class NoDigestAvailableError(EchoError):
     retryable = False
     severity = Severity.LOW
     http_status = 404
+
+
+class InsiderNotFoundError(EchoError):
+    """PROMPT.md Phase 18: no ingested transaction history exists for this
+    (issuer, insider) pair — distinct from an empty-but-valid history,
+    which `domains.research.policies.compute_insider_profile` handles by
+    simply returning `None` rather than raising."""
+
+    code = "insider_not_found"
+    retryable = False
+    severity = Severity.LOW
+    http_status = 404

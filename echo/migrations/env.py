@@ -38,6 +38,7 @@ from domains.portfolio.repository import (  # noqa: F401 — registers tables on
     SchwabRawResponseRow,
 )
 from domains.research.repository import (  # noqa: F401 — registers tables on Base.metadata
+    InsiderTransactionRow,
     IssuerRow,
     NewsArticleRow,
     NewsDigestRow,

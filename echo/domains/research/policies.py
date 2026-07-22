@@ -12,7 +12,16 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from core.identifiers import new_id
-from domains.research.schemas import EventType, FieldConflict, NewsArticle, ProviderClaim
+from domains.research.schemas import (
+    AnomalyFeature,
+    EventType,
+    FieldConflict,
+    InsiderProfile,
+    InsiderTransaction,
+    NewsArticle,
+    ProviderClaim,
+    TransactionType,
+)
 
 # Research data (a company's name, industry classification) changes far
 # slower than portfolio positions — a 30-day threshold, not Portfolio's
@@ -326,3 +335,261 @@ def select_top_stories(articles: list[NewsArticle], limit: int = 5) -> list[News
     primaries = [a for a in articles if a.is_cluster_primary]
     ranked = sorted(primaries, key=lambda a: a.relevance_score or 0.0, reverse=True)
     return ranked[:limit]
+
+
+# PROMPT.md Phase 18 implement item 4: "transaction type normalization."
+# Real SEC transaction codes, live-verified against several real UnitedHealth
+# Group Form 4 filings before this table was written (Docs/DECISION_LOG.md's
+# Phase 18 entry) — A (grant/award) and S (open market sale) both actually
+# observed; the rest are well-documented SEC conventions not yet seen live in
+# this codebase's own test filings, mapped from SEC's own published code list
+# rather than assumed. Any code not in this table is TransactionType.OTHER,
+# never a guess.
+_TRANSACTION_CODE_MAP: dict[str, TransactionType] = {
+    "P": TransactionType.OPEN_MARKET_PURCHASE,
+    "S": TransactionType.OPEN_MARKET_SALE,
+    "A": TransactionType.GRANT_AWARD,
+    "M": TransactionType.OPTION_EXERCISE,
+    "X": TransactionType.OPTION_EXERCISE,
+    "F": TransactionType.TAX_WITHHOLDING,
+    "G": TransactionType.GIFT,
+}
+
+
+def normalize_transaction_type(transaction_code: str) -> TransactionType:
+    return _TRANSACTION_CODE_MAP.get(transaction_code, TransactionType.OTHER)
+
+
+def parse_form4_transactions(
+    raw: dict[str, Any],
+    *,
+    issuer_id: str,
+    accession_number: str,
+    source_record_id: str,
+    now: datetime,
+) -> list[InsiderTransaction]:
+    """Translates one filing's raw dict (`providers.research.sec_edgar.
+    adapter._parse_form4_xml`'s output) into typed, normalized transactions.
+    PROMPT.md Phase 18 implement item 3 ("insider identity normalization"):
+    the reporting owner's CIK/name/role are attached to every transaction
+    in the filing, uniformly. Verification 2 ("planned sales are identified
+    when data supports it"): `is_planned_sale` is only ever `True` when the
+    filing's own `aff10b5_one` flag says so — never inferred from anything
+    else. A transaction missing a required field (date, code, or share
+    count) is skipped rather than half-recorded, matching every other
+    parser in this codebase.
+
+    `transaction_id` is derived deterministically from `(accession_number,
+    index-within-filing)` rather than `InsiderTransaction`'s own random
+    default — a filing's own transaction ordering is stable across
+    re-fetches, and SEC provides no other per-transaction identifier. This
+    is load-bearing: `ResearchRepository.save_insider_transactions` upserts
+    by `transaction_id` (the same enrich-in-place pattern as `save_articles`),
+    so re-ingesting an already-seen filing (any scheduled re-sync will, since
+    `get_form4_filings` always returns the most recent N) must resolve to the
+    *same* rows, not duplicate ones — duplicated history would silently
+    corrupt `compute_insider_profile` and `compute_size_anomaly`'s baselines.
+    Caught live (Docs/DECISION_LOG.md's Phase 18 entry) by re-running
+    ingestion against real UNH filings twice with overlapping accessions and
+    observing duplicate rows before this fix."""
+    insider_cik = raw.get("reporting_owner_cik")
+    insider_name = raw.get("reporting_owner_name")
+    if not insider_cik or not insider_name:
+        return []
+    aff10b5_one = bool(raw.get("aff10b5_one", False))
+    footnotes: dict[str, str] = raw.get("footnotes", {})
+
+    transactions = []
+    for index, item in enumerate(raw.get("transactions", [])):
+        date_str = item.get("transaction_date")
+        code = item.get("transaction_code")
+        shares_str = item.get("shares")
+        if not date_str or not code or shares_str is None:
+            continue
+        try:
+            shares = float(shares_str)
+            transaction_date = datetime.fromisoformat(date_str).replace(tzinfo=UTC)
+        except (ValueError, TypeError):
+            continue
+        price_str = item.get("price_per_share")
+        price = float(price_str) if price_str not in (None, "") else None
+        transaction_type = normalize_transaction_type(code)
+        footnote_ids = item.get("footnote_ids") or []
+        footnote_text = " ".join(footnotes[fid] for fid in footnote_ids if fid in footnotes) or None
+
+        transactions.append(
+            InsiderTransaction(
+                transaction_id=f"insidertxn_{accession_number}_{index}",
+                issuer_id=issuer_id,
+                insider_cik=str(insider_cik),
+                insider_name=str(insider_name),
+                is_director=bool(raw.get("is_director", False)),
+                is_officer=bool(raw.get("is_officer", False)),
+                is_ten_percent_owner=bool(raw.get("is_ten_percent_owner", False)),
+                officer_title=raw.get("officer_title"),
+                transaction_date=transaction_date,
+                transaction_code=code,
+                transaction_type=transaction_type,
+                shares=shares,
+                price_per_share=price,
+                transaction_value=compute_transaction_value(shares, price),
+                acquired_disposed=str(item.get("acquired_disposed") or ""),
+                shares_owned_after=(
+                    float(item["shares_owned_following"])
+                    if item.get("shares_owned_following") not in (None, "")
+                    else None
+                ),
+                ownership_change_percent=compute_ownership_change_percent(
+                    shares,
+                    float(item["shares_owned_following"])
+                    if item.get("shares_owned_following") not in (None, "")
+                    else None,
+                    item.get("acquired_disposed"),
+                ),
+                is_planned_sale=(
+                    transaction_type == TransactionType.OPEN_MARKET_SALE and aff10b5_one
+                ),
+                footnote_text=footnote_text,
+                filing_accession_number=accession_number,
+                source_record_id=source_record_id,
+                synced_at=now,
+            )
+        )
+    return transactions
+
+
+def compute_transaction_value(shares: float, price_per_share: float | None) -> float | None:
+    """PROMPT.md Phase 18 verification 3: "transaction values ... are
+    computed in code." `None` (never `0` or a guess) when the filing itself
+    didn't report a price — a stock grant genuinely has no market price,
+    and that stays missing rather than being estimated (Docs/DATA_MODEL.md:
+    Negative and Missing Data)."""
+    if price_per_share is None:
+        return None
+    return round(shares * price_per_share, 2)
+
+
+def compute_ownership_change_percent(
+    shares_transacted: float, shares_owned_after: float | None, acquired_disposed: str | None
+) -> float | None:
+    """PROMPT.md Phase 18 verification 3: "ownership changes are computed
+    in code." Derives the pre-transaction holding from the filing's own
+    post-transaction figure and the transacted share count — both real,
+    filing-reported numbers, never estimated. `None` when the filing didn't
+    report a post-transaction balance."""
+    if shares_owned_after is None:
+        return None
+    shares_owned_before = (
+        shares_owned_after - shares_transacted
+        if acquired_disposed == "A"
+        else shares_owned_after + shares_transacted
+    )
+    if shares_owned_before <= 0:
+        return None
+    return round((shares_transacted / shares_owned_before) * 100, 2)
+
+
+# PROMPT.md Phase 18 implement item 7: "deterministic anomaly features."
+# Docs/DOMAIN_OWNERSHIP.md's Research domain business rules explicitly name
+# "personal baseline anomaly detection" — compared against the insider's
+# *own* history, never a market-wide or peer benchmark this phase has no
+# real data for.
+_SIZE_ANOMALY_RATIO_THRESHOLD = 3.0
+_CLUSTER_WINDOW = timedelta(days=7)
+_CLUSTER_INSIDER_THRESHOLD = 3
+
+
+def compute_size_anomaly(
+    transaction: InsiderTransaction, insider_history: list[InsiderTransaction]
+) -> AnomalyFeature | None:
+    """PROMPT.md Phase 18 verification 4: "anomaly claims explain the
+    comparison baseline." `baseline_description` states exactly what was
+    compared against what — never a bare score. Requires at least 2 prior
+    transactions to establish a real baseline; with fewer, there's nothing
+    honest to compare against, so no feature is produced at all (not a
+    fabricated one)."""
+    prior = [
+        t
+        for t in insider_history
+        if t.transaction_id != transaction.transaction_id
+        and t.transaction_date < transaction.transaction_date
+    ]
+    if len(prior) < 2:
+        return None
+    average_shares = sum(t.shares for t in prior) / len(prior)
+    if average_shares <= 0:
+        return None
+    ratio = round(transaction.shares / average_shares, 2)
+    return AnomalyFeature(
+        feature_name="transaction_size_vs_personal_baseline",
+        value=ratio,
+        baseline_description=(
+            f"this transaction is {ratio}x the insider's own average transaction size "
+            f"({round(average_shares, 2)} shares) across their {len(prior)} prior recorded "
+            f"transactions for this issuer"
+        ),
+        is_notable=ratio >= _SIZE_ANOMALY_RATIO_THRESHOLD,
+    )
+
+
+def compute_insider_cluster_feature(
+    transaction: InsiderTransaction, issuer_transactions: list[InsiderTransaction]
+) -> AnomalyFeature | None:
+    """A real, well-known signal — multiple distinct insiders transacting
+    in the same direction within a short window — computed here as a count
+    with an explicit, stated window and comparison set (verification 4),
+    never a bare "cluster detected" flag."""
+    window_start = transaction.transaction_date - _CLUSTER_WINDOW
+    window_end = transaction.transaction_date + _CLUSTER_WINDOW
+    same_direction = {
+        t.insider_cik
+        for t in issuer_transactions
+        if t.acquired_disposed == transaction.acquired_disposed
+        and window_start <= t.transaction_date <= window_end
+    }
+    count = len(same_direction)
+    direction = "sales" if transaction.acquired_disposed == "D" else "acquisitions"
+    return AnomalyFeature(
+        feature_name="insider_cluster_timing",
+        value=float(count),
+        baseline_description=(
+            f"{count} distinct insider(s) at this issuer recorded a {direction[:-1]} transaction "
+            f"within {_CLUSTER_WINDOW.days} days of this one (including this transaction's own "
+            "insider)"
+        ),
+        is_notable=count >= _CLUSTER_INSIDER_THRESHOLD,
+    )
+
+
+def compute_insider_profile(
+    insider_cik: str, insider_name: str, issuer_id: str, transactions: list[InsiderTransaction]
+) -> InsiderProfile | None:
+    """PROMPT.md Phase 18 implement item 6: "historical insider profile."
+    `None` when there's no transaction history at all — an empty profile
+    would be a fabricated zero, not an honest absence."""
+    if not transactions:
+        return None
+    purchased = sum(
+        t.transaction_value or 0.0
+        for t in transactions
+        if t.transaction_type == TransactionType.OPEN_MARKET_PURCHASE
+    )
+    sold = sum(
+        t.transaction_value or 0.0
+        for t in transactions
+        if t.transaction_type == TransactionType.OPEN_MARKET_SALE
+    )
+    dates = [t.transaction_date for t in transactions]
+    return InsiderProfile(
+        insider_cik=insider_cik,
+        insider_name=insider_name,
+        issuer_id=issuer_id,
+        transaction_count=len(transactions),
+        total_purchased_value=round(purchased, 2),
+        total_sold_value=round(sold, 2),
+        average_transaction_shares=round(
+            sum(t.shares for t in transactions) / len(transactions), 2
+        ),
+        first_transaction_date=min(dates),
+        last_transaction_date=max(dates),
+    )

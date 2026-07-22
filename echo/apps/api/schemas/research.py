@@ -93,3 +93,62 @@ class FeedbackResponse(BaseModel):
     user_id: str
     useful: bool
     created_at: datetime
+
+
+class InsiderTransactionResponse(BaseModel):
+    transaction_id: str
+    issuer_id: str
+    insider_cik: str
+    insider_name: str
+    is_director: bool
+    is_officer: bool
+    is_ten_percent_owner: bool
+    officer_title: str | None
+    transaction_date: datetime
+    transaction_code: str
+    transaction_type: str
+    shares: float
+    price_per_share: float | None
+    transaction_value: float | None
+    acquired_disposed: str
+    shares_owned_after: float | None
+    ownership_change_percent: float | None
+    is_planned_sale: bool
+    footnote_text: str | None
+    filing_context: str | None
+    filing_accession_number: str
+    synced_at: datetime
+
+
+class InsiderProfileResponse(BaseModel):
+    insider_cik: str
+    insider_name: str
+    issuer_id: str
+    transaction_count: int
+    total_purchased_value: float
+    total_sold_value: float
+    average_transaction_shares: float
+    first_transaction_date: datetime
+    last_transaction_date: datetime
+
+
+class AnomalyFeatureResponse(BaseModel):
+    feature_name: str
+    value: float
+    baseline_description: str
+    is_notable: bool
+
+
+class InsiderEvidenceResponse(BaseModel):
+    issuer_id: str
+    insider_cik: str
+    transactions: list[InsiderTransactionResponse]
+    profile: InsiderProfileResponse | None
+    anomalies: list[AnomalyFeatureResponse]
+    generated_at: datetime
+
+
+class InsiderInterpretationResponse(BaseModel):
+    issuer_id: str
+    insider_cik: str
+    interpretation: str

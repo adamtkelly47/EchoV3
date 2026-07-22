@@ -9,24 +9,37 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from application.orchestrators.insider_intelligence import InsiderIntelligenceOrchestrator
 from application.orchestrators.news_intelligence import NewsIntelligenceOrchestrator
 from apps.api.dependencies import (
     get_db_session,
+    get_insider_intelligence_orchestrator,
     get_news_intelligence_orchestrator,
     get_research_service,
 )
 from apps.api.schemas.research import (
+    AnomalyFeatureResponse,
     EvidencePackageResponse,
     FeedbackRequest,
     FeedbackResponse,
     FieldConflictResponse,
+    InsiderEvidenceResponse,
+    InsiderInterpretationResponse,
+    InsiderProfileResponse,
+    InsiderTransactionResponse,
     IssuerResponse,
     NewsArticleResponse,
     NewsDigestResponse,
     ProviderClaimResponse,
     SecurityResponse,
 )
-from domains.research.schemas import EvidencePackage, Issuer, NewsArticle, NewsDigest
+from domains.research.schemas import (
+    EvidencePackage,
+    InsiderEvidenceView,
+    Issuer,
+    NewsArticle,
+    NewsDigest,
+)
 from domains.research.service import ResearchService
 
 router = APIRouter(prefix="/research", tags=["research"])
@@ -118,6 +131,65 @@ def _to_evidence_response(package: EvidencePackage) -> EvidencePackageResponse:
     )
 
 
+def _to_insider_evidence_response(evidence: InsiderEvidenceView) -> InsiderEvidenceResponse:
+    return InsiderEvidenceResponse(
+        issuer_id=evidence.issuer_id,
+        insider_cik=evidence.insider_cik,
+        transactions=[
+            InsiderTransactionResponse(
+                transaction_id=t.transaction_id,
+                issuer_id=t.issuer_id,
+                insider_cik=t.insider_cik,
+                insider_name=t.insider_name,
+                is_director=t.is_director,
+                is_officer=t.is_officer,
+                is_ten_percent_owner=t.is_ten_percent_owner,
+                officer_title=t.officer_title,
+                transaction_date=t.transaction_date,
+                transaction_code=t.transaction_code,
+                transaction_type=t.transaction_type.value,
+                shares=t.shares,
+                price_per_share=t.price_per_share,
+                transaction_value=t.transaction_value,
+                acquired_disposed=t.acquired_disposed,
+                shares_owned_after=t.shares_owned_after,
+                ownership_change_percent=t.ownership_change_percent,
+                is_planned_sale=t.is_planned_sale,
+                footnote_text=t.footnote_text,
+                filing_context=t.filing_context.value if t.filing_context else None,
+                filing_accession_number=t.filing_accession_number,
+                synced_at=t.synced_at,
+            )
+            for t in evidence.transactions
+        ],
+        profile=(
+            InsiderProfileResponse(
+                insider_cik=evidence.profile.insider_cik,
+                insider_name=evidence.profile.insider_name,
+                issuer_id=evidence.profile.issuer_id,
+                transaction_count=evidence.profile.transaction_count,
+                total_purchased_value=evidence.profile.total_purchased_value,
+                total_sold_value=evidence.profile.total_sold_value,
+                average_transaction_shares=evidence.profile.average_transaction_shares,
+                first_transaction_date=evidence.profile.first_transaction_date,
+                last_transaction_date=evidence.profile.last_transaction_date,
+            )
+            if evidence.profile is not None
+            else None
+        ),
+        anomalies=[
+            AnomalyFeatureResponse(
+                feature_name=a.feature_name,
+                value=a.value,
+                baseline_description=a.baseline_description,
+                is_notable=a.is_notable,
+            )
+            for a in evidence.anomalies
+        ],
+        generated_at=evidence.generated_at,
+    )
+
+
 @router.post("/issuers/sync", response_model=IssuerResponse)
 async def sync_issuer(
     ticker: str,
@@ -191,4 +263,76 @@ async def record_news_feedback(
         user_id=feedback.user_id,
         useful=feedback.useful,
         created_at=feedback.created_at,
+    )
+
+
+@router.post(
+    "/issuers/{issuer_id}/insiders/ingest", response_model=list[InsiderTransactionResponse]
+)
+async def ingest_insider_transactions(
+    issuer_id: str,
+    cik: str,
+    insider: InsiderIntelligenceOrchestrator = Depends(get_insider_intelligence_orchestrator),
+    session: AsyncSession = Depends(get_db_session),
+) -> list[InsiderTransactionResponse]:
+    transactions = await insider.ingest_and_classify(issuer_id, cik)
+    await session.commit()
+    return [
+        InsiderTransactionResponse(
+            transaction_id=t.transaction_id,
+            issuer_id=t.issuer_id,
+            insider_cik=t.insider_cik,
+            insider_name=t.insider_name,
+            is_director=t.is_director,
+            is_officer=t.is_officer,
+            is_ten_percent_owner=t.is_ten_percent_owner,
+            officer_title=t.officer_title,
+            transaction_date=t.transaction_date,
+            transaction_code=t.transaction_code,
+            transaction_type=t.transaction_type.value,
+            shares=t.shares,
+            price_per_share=t.price_per_share,
+            transaction_value=t.transaction_value,
+            acquired_disposed=t.acquired_disposed,
+            shares_owned_after=t.shares_owned_after,
+            ownership_change_percent=t.ownership_change_percent,
+            is_planned_sale=t.is_planned_sale,
+            footnote_text=t.footnote_text,
+            filing_context=t.filing_context.value if t.filing_context else None,
+            filing_accession_number=t.filing_accession_number,
+            synced_at=t.synced_at,
+        )
+        for t in transactions
+    ]
+
+
+@router.get(
+    "/issuers/{issuer_id}/insiders/{insider_cik}/evidence", response_model=InsiderEvidenceResponse
+)
+async def get_insider_evidence(
+    issuer_id: str,
+    insider_cik: str,
+    research: ResearchService = Depends(get_research_service),
+) -> InsiderEvidenceResponse:
+    evidence = await research.get_insider_evidence(issuer_id, insider_cik)
+    return _to_insider_evidence_response(evidence)
+
+
+@router.post(
+    "/issuers/{issuer_id}/insiders/{insider_cik}/interpret",
+    response_model=InsiderInterpretationResponse,
+)
+async def interpret_insider_activity(
+    issuer_id: str,
+    insider_cik: str,
+    company_name: str,
+    insider: InsiderIntelligenceOrchestrator = Depends(get_insider_intelligence_orchestrator),
+) -> InsiderInterpretationResponse:
+    """Explicitly opt-in — a separate POST a user/client must call, never
+    triggered as a side effect of ingestion or the evidence read
+    (application/orchestrators/insider_intelligence.py's own docstring:
+    Claude interpretation is "explicitly opt-in")."""
+    interpretation = await insider.interpret(issuer_id, insider_cik, company_name)
+    return InsiderInterpretationResponse(
+        issuer_id=issuer_id, insider_cik=insider_cik, interpretation=interpretation
     )

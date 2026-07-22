@@ -181,3 +181,122 @@ class NewsFeedback(BaseModel):
     user_id: str
     useful: bool
     created_at: datetime
+
+
+class TransactionType(str, Enum):
+    """PROMPT.md Phase 18 implement item 4: "transaction type
+    normalization." A fixed, closed vocabulary the raw SEC transaction code
+    is mapped into by `domains.research.policies.normalize_transaction_type`
+    — never inferred by a model. Verification 1 ("grants and open market
+    purchases are distinguished") is true by construction: `GRANT_AWARD` and
+    `OPEN_MARKET_PURCHASE` are different values, never conflated."""
+
+    OPEN_MARKET_PURCHASE = "open_market_purchase"  # code P
+    OPEN_MARKET_SALE = "open_market_sale"  # code S
+    GRANT_AWARD = "grant_award"  # code A
+    OPTION_EXERCISE = "option_exercise"  # codes M, X
+    TAX_WITHHOLDING = "tax_withholding"  # code F
+    GIFT = "gift"  # code G
+    OTHER = "other"  # any other real SEC code (C, D, ...) — never guessed
+
+
+class FilingContext(str, Enum):
+    """PROMPT.md Phase 18 implement item 8: "local filing context
+    classification." Closed vocabulary Ollama classifies a transaction's
+    real footnote text into (when one exists) — never free-text generation,
+    same structural-safety pattern as Phase 17's `EventType`."""
+
+    ROUTINE_COMPENSATION = "routine_compensation"
+    TAX_WITHHOLDING_EXPLANATION = "tax_withholding_explanation"
+    GIFT_EXPLANATION = "gift_explanation"
+    PLAN_10B5_1_EXPLANATION = "plan_10b5_1_explanation"
+    OTHER_EXPLANATION = "other_explanation"
+    NO_FOOTNOTE = "no_footnote"
+
+
+class InsiderTransaction(BaseModel):
+    """One non-derivative transaction from one Form 4 filing (PROMPT.md
+    Phase 18 implement items 2-5). `derivativeTable` (options/derivatives)
+    is deliberately not parsed — a documented scope limitation
+    (Docs/DECISION_LOG.md's Phase 18 entry), not a silent gap.
+    `transaction_value`/`ownership_change_percent` are computed in code from
+    the filing's own reported numbers (verification 3: "transaction values
+    and ownership changes are computed in code") — never estimated when the
+    filing itself doesn't report a price (a stock grant's `price_per_share`
+    is genuinely `0` or absent, and stays that way, matching Portfolio's
+    established "missing stays missing" discipline). `is_planned_sale` is
+    only ever `True` when the filing's own `aff10b5One` flag says so
+    (verification 2: "planned sales are identified when data supports it")
+    — never inferred."""
+
+    transaction_id: str = Field(default_factory=lambda: new_id("insidertxn"))
+    issuer_id: str
+    insider_cik: str
+    insider_name: str
+    is_director: bool
+    is_officer: bool
+    is_ten_percent_owner: bool
+    officer_title: str | None = None
+    transaction_date: datetime
+    transaction_code: str
+    transaction_type: TransactionType
+    shares: float
+    price_per_share: float | None = None
+    transaction_value: float | None = None
+    acquired_disposed: str
+    shares_owned_after: float | None = None
+    ownership_change_percent: float | None = None
+    is_planned_sale: bool = False
+    footnote_text: str | None = None
+    filing_context: FilingContext | None = None
+    filing_accession_number: str
+    source_record_id: str
+    synced_at: datetime
+
+
+class AnomalyFeature(BaseModel):
+    """PROMPT.md Phase 18 implement item 7: "deterministic anomaly
+    features." No model call — a comparison against a stated, visible
+    baseline, computed in code (CONSTITUTION.md: deterministic calculations
+    belong in code). `baseline_description` exists specifically to satisfy
+    verification 4 ("anomaly claims explain the comparison baseline") — an
+    anomaly score with no visible baseline is not allowed to exist in this
+    schema."""
+
+    feature_name: str
+    value: float
+    baseline_description: str
+    is_notable: bool
+
+
+class InsiderProfile(BaseModel):
+    """PROMPT.md Phase 18 implement item 6: "historical insider profile."
+    A computed aggregate, not a persisted table — recomputed from the
+    insider's own transaction history on every read, the same
+    computed-not-stored pattern as Portfolio's `MoneyDashboard` (Phase 13),
+    since it's a rolling view that changes as new transactions arrive, not
+    a point-in-time fact worth its own immutable row."""
+
+    insider_cik: str
+    insider_name: str
+    issuer_id: str
+    transaction_count: int
+    total_purchased_value: float
+    total_sold_value: float
+    average_transaction_shares: float
+    first_transaction_date: datetime
+    last_transaction_date: datetime
+
+
+class InsiderEvidenceView(BaseModel):
+    """PROMPT.md Phase 18 implement item 9: "evidence view" — mirrors
+    `EvidencePackage` (Phase 16): every transaction, the computed profile,
+    and every anomaly feature with its baseline, bundled together so a
+    claim is never presented without the data it came from."""
+
+    issuer_id: str
+    insider_cik: str
+    transactions: list[InsiderTransaction]
+    profile: InsiderProfile | None
+    anomalies: list[AnomalyFeature]
+    generated_at: datetime

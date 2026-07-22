@@ -22,20 +22,27 @@ from core.identifiers import new_id
 from core.provenance import SourceRecord, ValidationStatus
 from core.time import Clock
 from domains.research.errors import (
+    InsiderNotFoundError,
     IssuerNotFoundError,
     NoDigestAvailableError,
     NoProviderDataAvailableError,
 )
 from domains.research.policies import (
+    compute_insider_cluster_feature,
+    compute_insider_profile,
+    compute_size_anomaly,
     is_issuer_stale,
     parse_finnhub_issuer_claim,
     parse_finnhub_news_articles,
+    parse_form4_transactions,
     parse_sec_edgar_issuer_claim,
     resolve_issuer_fields,
 )
 from domains.research.repository import ResearchRepository
 from domains.research.schemas import (
     EvidencePackage,
+    InsiderEvidenceView,
+    InsiderTransaction,
     Issuer,
     NewsArticle,
     NewsDigest,
@@ -57,6 +64,11 @@ class NewsProviderPort(Protocol):
     ) -> list[dict[str, Any]]: ...
 
 
+class Form4ProviderPort(Protocol):
+    async def get_form4_filings(self, cik: str, *, limit: int = 20) -> list[dict[str, Any]]: ...
+    async def get_form4_document(self, cik: str, accession_number: str) -> dict[str, Any]: ...
+
+
 class ResearchService:
     def __init__(
         self,
@@ -66,6 +78,7 @@ class ResearchService:
         audit: AuditRepository,
         clock: Clock,
         news_providers: dict[str, NewsProviderPort] | None = None,
+        form4_providers: dict[str, Form4ProviderPort] | None = None,
     ) -> None:
         self._research = research
         self._source_records = source_records
@@ -73,6 +86,7 @@ class ResearchService:
         self._audit = audit
         self._clock = clock
         self._news_providers = news_providers or {}
+        self._form4_providers = form4_providers or {}
 
     async def sync_issuer(self, ticker: str) -> Issuer:
         """PROMPT.md Phase 16 implement items 3-8 in one pipeline: ingest
@@ -300,3 +314,87 @@ class ResearchService:
             detail={"article_id": article_id, "user_id": user_id, "useful": useful},
         )
         return feedback
+
+    async def ingest_form4_transactions(
+        self, issuer_id: str, cik: str, *, limit: int = 20
+    ) -> list[InsiderTransaction]:
+        """PROMPT.md Phase 18 implement items 1-5 in one pipeline: retrieve
+        the most recent Form 4 filings for `cik`, fetch and parse each
+        filing's own XML document, and normalize into typed transactions.
+        Pure ingestion only — no anomaly features (those need the *full*
+        history, assembled at read time by `get_insider_evidence`) and no
+        model calls (footnote classification needs the Model Gateway,
+        which domains/ never imports — Application layer's job). One
+        filing failing to fetch/parse doesn't block the rest."""
+        now = self._clock.now_utc()
+        transactions: list[InsiderTransaction] = []
+        for provider_name, provider in self._form4_providers.items():
+            try:
+                filings = await provider.get_form4_filings(cik, limit=limit)
+            except Exception:  # noqa: BLE001
+                continue  # nosec B112 — intentional: skip this provider, not the whole ingest
+            for filing in filings:
+                accession = filing["accession_number"]
+                try:
+                    raw = await provider.get_form4_document(cik, accession)
+                except Exception:  # noqa: BLE001
+                    continue  # nosec B112 — one filing failing doesn't block the rest
+                source_record_id = await self._store_raw_response(
+                    raw,
+                    provider=provider_name,
+                    now=now,
+                    origin=f"{provider_name}-form4-{accession}",
+                )
+                transactions.extend(
+                    parse_form4_transactions(
+                        raw,
+                        issuer_id=issuer_id,
+                        accession_number=accession,
+                        source_record_id=source_record_id,
+                        now=now,
+                    )
+                )
+        return transactions
+
+    async def save_insider_transactions(self, transactions: list[InsiderTransaction]) -> None:
+        await self._research.save_insider_transactions(transactions)
+
+    async def list_insider_transactions_for_issuer(
+        self, issuer_id: str
+    ) -> list[InsiderTransaction]:
+        return await self._research.list_insider_transactions_for_issuer(issuer_id)
+
+    async def get_insider_evidence(self, issuer_id: str, insider_cik: str) -> InsiderEvidenceView:
+        """PROMPT.md Phase 18 implement item 9: "evidence view." Never
+        re-ingests — reads only what's already been ingested, the same
+        read/write split as `get_evidence_package`/`get_dashboard`.
+        Anomaly features (implement item 7) are computed for the insider's
+        *most recent* transaction against their own full history — the
+        real product question is "is this insider's latest activity
+        anomalous," not a full historical replay."""
+        issuer_transactions = await self._research.list_insider_transactions_for_issuer(issuer_id)
+        insider_transactions = [t for t in issuer_transactions if t.insider_cik == insider_cik]
+        if not insider_transactions:
+            raise InsiderNotFoundError(
+                f"no ingested Form 4 transactions for insider_cik {insider_cik!r} "
+                f"at issuer_id {issuer_id!r}"
+            )
+        profile = compute_insider_profile(
+            insider_cik, insider_transactions[0].insider_name, issuer_id, insider_transactions
+        )
+        latest = max(insider_transactions, key=lambda t: t.transaction_date)
+        anomalies = []
+        size_anomaly = compute_size_anomaly(latest, insider_transactions)
+        if size_anomaly is not None:
+            anomalies.append(size_anomaly)
+        cluster_anomaly = compute_insider_cluster_feature(latest, issuer_transactions)
+        if cluster_anomaly is not None:
+            anomalies.append(cluster_anomaly)
+        return InsiderEvidenceView(
+            issuer_id=issuer_id,
+            insider_cik=insider_cik,
+            transactions=insider_transactions,
+            profile=profile,
+            anomalies=anomalies,
+            generated_at=self._clock.now_utc(),
+        )
