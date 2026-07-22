@@ -16,6 +16,7 @@ from apps.api.routes.approvals import router as approvals_router
 from apps.api.routes.calendar import router as calendar_router
 from apps.api.routes.conversations import router as conversations_router
 from apps.api.routes.dashboard import router as dashboard_router
+from apps.api.routes.email import router as email_router
 from apps.api.routes.memory import router as memory_router
 from apps.api.routes.portfolio import router as portfolio_router
 from apps.api.routes.projects import router as projects_router
@@ -35,6 +36,7 @@ app = FastAPI(title="Echo API", version="0.1.0")
 app.include_router(conversations_router)
 app.include_router(memory_router)
 app.include_router(calendar_router)
+app.include_router(email_router)
 app.include_router(approvals_router)
 app.include_router(portfolio_router)
 app.include_router(research_router)

@@ -16,9 +16,13 @@ from application.capabilities.calendar_read import (
     build_calendar_list_events_capability,
 )
 from application.capabilities.current_time import build_current_time_capability
+from application.capabilities.email_read import build_email_search_messages_capability
+from application.gmail_provider_factory import build_gmail_provider
 from application.model_gateway_factory import ModelGatewayPort, build_model_gateway
 from application.orchestrators.calendar_writes import CalendarWriteOrchestrator
 from application.orchestrators.conversation import ConversationOrchestrator
+from application.orchestrators.email_intelligence import EmailIntelligenceOrchestrator
+from application.orchestrators.email_writes import EmailWriteOrchestrator
 from application.orchestrators.insider_intelligence import InsiderIntelligenceOrchestrator
 from application.orchestrators.memory_extraction import MemoryExtractionOrchestrator
 from application.orchestrators.monitoring import MonitoringOrchestrator
@@ -50,6 +54,8 @@ from domains.calendar.service import CalendarProviderPort, CalendarService
 from domains.capabilities.service import CapabilityExecutor, CapabilityRegistry
 from domains.conversation.repository import PostgresConversationRepository
 from domains.conversation.service import ConversationService
+from domains.email.repository import PostgresEmailCredentialRepository, PostgresEmailMessageRepository
+from domains.email.service import EmailProviderPort, EmailService
 from domains.memory.repository import PostgresMemoryRepository
 from domains.memory.service import MemoryService
 from domains.portfolio.repository import (
@@ -89,6 +95,11 @@ from infrastructure.secrets.encryption import SecretCipher
 @lru_cache
 def get_google_calendar_provider() -> CalendarProviderPort:
     return build_google_calendar_provider(get_settings())
+
+
+@lru_cache
+def get_gmail_provider() -> EmailProviderPort:
+    return build_gmail_provider(get_settings())
 
 
 @lru_cache
@@ -142,6 +153,9 @@ def get_capability_registry() -> CapabilityRegistry:
     state_secret = get_oauth_state_secret()
     registry.register(build_calendar_list_events_capability(provider, cipher, state_secret))
     registry.register(build_calendar_free_busy_capability(provider, cipher, state_secret))
+    registry.register(
+        build_email_search_messages_capability(get_gmail_provider(), cipher, state_secret)
+    )
     return registry
 
 
@@ -206,6 +220,27 @@ def get_calendar_service(
     )
 
 
+def get_email_service(
+    session: AsyncSession = Depends(get_db_session),
+) -> EmailService:
+    return EmailService(
+        PostgresEmailCredentialRepository(session),
+        PostgresEmailMessageRepository(session),
+        get_gmail_provider(),
+        get_secret_cipher(),
+        PostgresAuditRepository(session),
+        SystemClock(),
+        get_oauth_state_secret(),
+    )
+
+
+def get_email_intelligence_orchestrator(
+    email: EmailService = Depends(get_email_service),
+    gateway: ModelGatewayPort = Depends(get_model_gateway),
+) -> EmailIntelligenceOrchestrator:
+    return EmailIntelligenceOrchestrator(email, gateway, SystemClock())
+
+
 def get_approval_service(
     session: AsyncSession = Depends(get_db_session),
 ) -> ApprovalService:
@@ -222,6 +257,13 @@ def get_calendar_write_orchestrator(
     calendar: CalendarService = Depends(get_calendar_service),
 ) -> CalendarWriteOrchestrator:
     return CalendarWriteOrchestrator(approvals, calendar, get_google_calendar_provider())
+
+
+def get_email_write_orchestrator(
+    approvals: ApprovalService = Depends(get_approval_service),
+    email: EmailService = Depends(get_email_service),
+) -> EmailWriteOrchestrator:
+    return EmailWriteOrchestrator(approvals, email, get_gmail_provider())
 
 
 def get_portfolio_service(

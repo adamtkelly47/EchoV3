@@ -44,8 +44,9 @@ For governing rules, read `Docs/CONSTITUTION.md` first. This file never override
 | `SCHWAB_CLIENT_ID`/`SECRET` | Portfolio sync, dashboard, IPS, quotes, paper trading |
 | `FINNHUB_API_KEY` | Company news, fundamentals |
 | `RESEARCH_CONTACT_EMAIL` | SEC EDGAR (Form 4 insider filings) and Senate eFD (PTR disclosures) — both are keyless but require a real contact email for fair-access compliance |
+| `GMAIL_CLIENT_ID`/`SECRET` | Gmail read (search/threads/classification) and approval-gated write (draft/send/reply/archive/label/trash) |
 
-Gmail (`Docs/PROMPT.md` Phases 20-21) is a **standing deferral** at the user's explicit request — no code exists for it, and no env var unlocks it.
+Gmail (`Docs/PROMPT.md` Phases 20-21) was a standing deferral through Phase 27; it was implemented in this session at the user's explicit request. See section 3.12 below. The Gmail OAuth consent round-trip itself has not been exercised against a real Google account from inside this codebase — connect a real account via `GET /email/oauth/authorize` before relying on it.
 
 ### Rebuilding after code or dependency changes
 
@@ -71,7 +72,8 @@ Echo is a modular monolith (`Docs/decisions/ADR_0001`) organized as 13 canonical
 | Projects | `/projects` | Phase 23 | Goals, milestones, tasks, decisions, blockers, status updates |
 | System | `/monitors`, `/trust` | Phase 24-25 | Background monitors/alerts, evaluation/trust metrics, hallucination incidents |
 | Dashboard (cross-domain read) | `/dashboard` | Phase 22 | Unified one-screen view |
-| Email, Identity, Notifications, Capabilities, Knowledge | — | Not populated | Gmail deferred; the rest have no phase that needed them yet |
+| Email | `/email` | Phase 20-21 | Gmail read (search/thread/classification) and approval-gated write (draft/send/reply/archive/label/trash) |
+| Identity, Notifications, Capabilities, Knowledge | — | Not populated | No phase has needed them yet |
 
 Capabilities exists in code as an internal registry (`domains/capabilities/`) with no direct API surface of its own — it's what `Conversation`'s planner calls into.
 
@@ -262,7 +264,39 @@ curl "http://localhost:8000/trust/regression-cases"
 ```bash
 curl "http://localhost:8000/dashboard?user_id=me"
 ```
-One call, seven cards: Today (calendar), Money (portfolio), Attention (pending approvals + IPS breaches), Approval inbox, Projects, Conversation (recent sessions), Integration status. Every card carries its own `status`/`as_of` — a disconnected integration never takes down the other cards. The frontend at `http://localhost:3000/` renders this same endpoint.
+One call, seven cards: Today (calendar), Money (portfolio), Attention (pending approvals + IPS breaches), Approval inbox, Projects, Conversation (recent sessions), Integration status. Every card carries its own `status`/`as_of` — a disconnected integration never takes down the other cards. The frontend at `http://localhost:3000/` renders this same endpoint. (Email is not yet one of the seven cards or its own frontend page — see the "What's deliberately not here" note in section 7.)
+
+### 3.12 Gmail
+
+```bash
+# 1. Connect (one-time OAuth, requires GMAIL_CLIENT_ID/SECRET to be set first)
+curl "http://localhost:8000/email/oauth/authorize?user_id=me"   # open the returned URL, approve, get redirected back automatically
+
+# 2. Search / list recent (cache-first; a query always calls Gmail directly)
+curl "http://localhost:8000/email/messages?user_id=me&query=invoice&max_results=10"
+
+# 3. Read a single message or a whole thread
+curl "http://localhost:8000/email/messages/{provider_message_id}?user_id=me"
+curl "http://localhost:8000/email/threads/{thread_id}?user_id=me"
+
+# 4. Local classification (category / needs_response / action_items — one Ollama call, persisted)
+curl -X POST "http://localhost:8000/email/messages/{provider_message_id}/classify?user_id=me"
+
+# 5. Thread summary (Ollama, computed on demand, never persisted)
+curl "http://localhost:8000/email/threads/{thread_id}/summary?user_id=me"
+
+# 6. Propose a write (never executes directly — same propose -> approve -> execute pattern as Calendar)
+curl -X POST http://localhost:8000/email/messages/send -H "Content-Type: application/json" \
+  -d '{"user_id": "me", "to": ["someone@example.com"], "subject": "Hi", "body": "..."}'
+# -> returns a ProposalResponse with a proposal_id, status "awaiting_approval"
+
+curl -X POST http://localhost:8000/approvals/{proposal_id}/approve -H "Content-Type: application/json" \
+  -d '{"approving_user_id": "me", "confirmation_method": "readable"}'
+
+# 7. Execute (only possible once approved)
+curl -X POST "http://localhost:8000/email/proposals/{proposal_id}/execute?user_id=me"
+```
+Create/update draft, reply, archive, label, and trash follow the same propose -> approve -> execute pattern (`POST /email/drafts`, `PATCH /email/drafts/{draft_id}`, `POST /email/messages/{id}/reply`, `.../archive`, `.../labels`, `.../trash`). Every write is `email.write`-permissioned and goes through the same shared Approval Engine as Calendar (section 3.6) — there is no email-specific shortcut. **The Gmail OAuth consent flow itself has not been exercised against a real Google account from inside this codebase** (Docs/DECISION_LOG.md's Phase 20-21 entry) — step 1 above is the first real-world check; do that before trusting the write verifiers (`SENT`/`TRASH`/label checks) in practice.
 
 ## 4. What runs automatically (no action needed)
 
@@ -275,6 +309,7 @@ Grouped by router (all under `http://localhost:8000`):
 - **`/conversations`** — start, send message, stream message, get history
 - **`/memory`** — extract, confirm, supersede, delete, conflicts, search, list
 - **`/calendar`** — oauth authorize/callback, calendars, events (read/create/modify/delete), freebusy, proposal execute
+- **`/email`** — oauth authorize/callback, messages (search/get), threads (get/summary), classify, drafts (create/update), messages/send/reply/archive/labels/trash, proposal execute
 - **`/approvals`** — get proposal, spoken-summary, approve, reject
 - **`/portfolio`** — schwab oauth, sync, accounts, snapshot, dashboard, quotes, price-history, IPS (create/active/versions/compliance), hypothetical-trades (propose/list/get-evaluation/sample/close)
 - **`/research`** — issuers sync/get, news digest/articles/feedback, insiders ingest/evidence/interpret, politicians ingest/evidence
@@ -312,7 +347,7 @@ Security/dependency scans used throughout this project's own development (not re
 
 ## 7. What's deliberately not here
 
-- **Gmail integration** (`Docs/PROMPT.md` Phases 20-21) — a standing deferral at the user's explicit request, not an oversight. No code, no env var, nothing partially built.
+- **A real, authenticated Gmail OAuth round-trip** — `domains/email/` (Phases 20-21) is fully built, tested (54 unit + 7 integration, all against fakes/real Neon), and live on the running API, but the actual Google consent flow has never been exercised against a real Gmail account from inside this codebase, and no Email card exists on the dashboard yet. Connect a real account via `GET /email/oauth/authorize` before relying on the write verifiers in practice.
 - **Real trade execution** (`Docs/PROMPT.md` Phase 28, "Future narrow trade execution") — explicitly not authorized by PROMPT.md itself. No order endpoint exists anywhere, for real or hypothetical trades.
 - **Speech-to-text / text-to-speech** — Phase 26 built the *contract* (channel abstraction, streaming events, interruption handling) a voice frontend would need, but no actual audio transport or STT/TTS vendor is integrated.
 - **Automatic hallucination detection** — every hallucination incident starts from a human noticing and reporting one; there is no code anywhere that judges its own output as false or unsupported.

@@ -36,6 +36,16 @@ class Settings(BaseSettings):
     google_oauth_client_secret: str | None = None
     google_oauth_redirect_uri: str = "http://localhost:8000/calendar/oauth/callback"
 
+    # Gmail OAuth (Phase 20-21). A separate OAuth client from Calendar's
+    # (rather than reusing google_oauth_client_id) so the two integrations'
+    # consent grants stay independently revocable/auditable — matching
+    # Docs/SECURITY.md's least-privilege framing applied per-integration,
+    # not just per-scope. Read-only scope only until Phase 21's write scope
+    # is additively requested (providers/email/gmail/adapter.py).
+    gmail_client_id: str | None = None
+    gmail_client_secret: str | None = None
+    gmail_redirect_uri: str = "http://localhost:8000/email/oauth/callback"
+
     # Symmetric key for encrypting secrets at rest (Docs/SECURITY.md) — a
     # Fernet key, not domain-specific, so it lives at the top level rather
     # than under a per-domain settings block.

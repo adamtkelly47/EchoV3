@@ -142,6 +142,56 @@ class FakeNewsModelGateway:
         yield ""  # pragma: no cover — makes this an async generator for typing
 
 
+class FakeEmailModelGateway:
+    """EmailIntelligenceOrchestrator makes `generate_structured` calls with
+    two different output shapes (per-message classification, per-thread
+    summary) — same dispatch-by-field-name pattern as
+    `FakeNewsModelGateway`."""
+
+    def __init__(
+        self,
+        *,
+        classification_decisions: list[dict[str, object]] | None = None,
+        summary_decisions: list[str] | None = None,
+        raise_on_classify: Exception | None = None,
+    ) -> None:
+        self._classification_queue = list(classification_decisions or [])
+        self._summary_queue = list(summary_decisions or [])
+        self.raise_on_classify = raise_on_classify
+        self.generate_calls: list[ModelRequest] = []
+        self.structured_calls: list[ModelRequest] = []
+
+    async def generate_structured(
+        self,
+        request: ModelRequest,
+        output_model: type[OutputT],
+        *,
+        provider: Provider | None = None,
+    ) -> OutputT:
+        self.structured_calls.append(request)
+        fields = output_model.model_fields
+        if "category" in fields:
+            if self.raise_on_classify is not None:
+                raise self.raise_on_classify
+            assert self._classification_queue, "no more configured classification_decisions"
+            return output_model(**self._classification_queue.pop(0))
+        if "summary" in fields:
+            assert self._summary_queue, "no more configured summary_decisions"
+            return output_model(summary=self._summary_queue.pop(0))
+        raise NotImplementedError(f"unrecognized output_model fields: {list(fields)}")
+
+    async def generate(
+        self, request: ModelRequest, *, provider: Provider | None = None
+    ) -> ModelResponse:
+        raise NotImplementedError("not used by EmailIntelligenceOrchestrator")
+
+    async def generate_stream(
+        self, request: ModelRequest, *, provider: Provider | None = None
+    ) -> AsyncIterator[str]:
+        raise NotImplementedError("not used by EmailIntelligenceOrchestrator")
+        yield ""  # pragma: no cover — makes this an async generator for typing
+
+
 class FakeInsiderModelGateway:
     """InsiderIntelligenceOrchestrator makes many `generate_structured`
     calls classifying footnotes into `FilingContext`, plus one `generate`
